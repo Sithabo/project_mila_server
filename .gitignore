@@ -1,0 +1,19 @@
+__pycache__/
+*.pyc
+*.mp4
+*.mkv
+*.h264
+*.jpg
+*.jpeg
+*.log
+*.bag
+*.db3
+.env
+.env.*
+config/local*
+output/
+runs/
+captures/
+
+# Project-local Python environment (recreate with docs/DEVELOPMENT_ENVIRONMENT.md)
+.venv/

@@ -1,0 +1,7 @@
+# No project-owned Python code exists yet, so there are no project dependencies
+# to pin. Add packages here only when project code actually imports them —
+# install with `python -m pip install ...` inside the activated .venv first,
+# then record the exact requirement here.
+#
+# Do NOT add ROS2, GStreamer, NVIDIA/CUDA, or Jetson multimedia packages here —
+# those are system-managed (see docs/DEVELOPMENT_ENVIRONMENT.md).
