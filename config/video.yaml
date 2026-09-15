@@ -1,0 +1,29 @@
+# Validated video capture/encode settings (see docs/HARDWARE_BASELINE.md and
+# docs/ENCODER_VALIDATION.md). Do not raise resolution/FPS beyond these
+# validated values without re-running the four-camera regression test.
+
+capture:
+  width: 800
+  height: 600
+  framerate: 20
+
+encoder:
+  bitrate: 4000000
+  # nvv4l2h264enc property names, confirmed via `gst-inspect-1.0 nvv4l2h264enc`
+  # on this exact installed plugin version (do not guess these):
+  #   idrinterval    - IDR frame occurrence frequency (frames)
+  #   iframeinterval - intra-frame occurrence frequency (frames)
+  #   insert-sps-pps - insert SPS/PPS at every IDR frame
+  # ~1 second IDR spacing at 20 FPS, per docs/JETSON_WAN_HANDOFF.md section 3.
+  idr_interval_frames: 20
+  iframe_interval_frames: 20
+  insert_sps_pps: true
+
+h264parse:
+  # -1 = send SPS/PPS with every IDR frame. Confirmed supported via
+  # `gst-inspect-1.0 h264parse` on this installed version.
+  config_interval: -1
+
+srt:
+  pkt_size: 1316
+  pbkeylen: 32

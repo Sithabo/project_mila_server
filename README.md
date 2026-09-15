@@ -42,9 +42,17 @@ control.
 
 ## Status
 
-This repository currently contains project scaffolding and documentation of the
-validated hardware baseline (see `docs/`). WAN transport (SRT/MediaMTX/WebSocket) is
-not yet implemented.
+- **FRONT camera WAN video publisher**: implemented and validated end-to-end against
+  the real OCI relay (real hardware H.264 via `nvv4l2h264enc`, real SRT publication,
+  187.8s and 365.1s stable test runs, zero reconnects, zero errors). See
+  `docs/WAN_PUBLISHER.md`.
+- **Telemetry WebSocket publisher**: implemented and validated end-to-end against the
+  real OCI relay (real GNSS/Xsens data, ~10 Hz, authenticated, zero relay errors,
+  zero reconnects over a 5-minute concurrent run). See `docs/WAN_PUBLISHER.md`.
+- **LEFT / RIGHT / CABIN WAN video**: not yet implemented (FRONT-only in this phase,
+  by design).
+- Hardware baseline, camera topology, ROS2 sensor interface, and encoder validation
+  are documented in `docs/`.
 
 ## Development environment
 

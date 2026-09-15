@@ -1,0 +1,17 @@
+# Stable camera role -> USB bus-path mapping.
+#
+# /dev/videoN numbers are NOT stable across reboots or USB re-enumeration (see
+# docs/CAMERA_TOPOLOGY.md). The USB bus path is the stable identity; the image
+# node is resolved at runtime by video/camera_resolver.py.
+#
+# DO NOT MOVE THE VALIDATED CAMERA CABLING WITHOUT REVALIDATION.
+# See docs/CAMERA_TOPOLOGY.md for the full topology rationale.
+
+front:
+  usb_path: "usb-2.4"
+left:
+  usb_path: "usb-4.1.2.2"
+right:
+  usb_path: "usb-2.3"
+cabin:
+  usb_path: "usb-4.2"
