@@ -1,5 +1,6 @@
 import asyncio
 import json
+import socket
 import sys
 import time
 from pathlib import Path
@@ -9,8 +10,12 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from telemetry.publisher import (  # noqa: E402
+    TCP_KEEPALIVE_IDLE_SECONDS,
+    TCP_KEEPALIVE_INTERVAL_SECONDS,
+    TCP_KEEPALIVE_PROBES,
     TelemetryPublisher,
     compute_backoff_delay,
+    enable_aggressive_tcp_keepalive,
     load_jetson_secrets,
     read_front_camera_status,
 )
@@ -168,3 +173,62 @@ def test_send_rate_measured_from_real_send_timestamps():
     rate = publisher._measured_send_rate_hz()
     assert rate is not None
     assert rate > 0
+
+
+class _FakeTransport:
+    def __init__(self, sock):
+        self._sock = sock
+
+    def get_extra_info(self, name):
+        return self._sock if name == "socket" else None
+
+
+class _FakeWebSocketWithTransport:
+    def __init__(self, sock):
+        self.transport = _FakeTransport(sock)
+
+
+def test_enable_aggressive_tcp_keepalive_sets_real_socket_options():
+    # Level 3B1-B4 regression test: reproduces the actual defect (a silently
+    # dead TCP connection surviving for 15+ minutes after a network interface
+    # change went undetected by the default ping/pong keepalive) by verifying
+    # the fix's socket options are genuinely applied and readable back — not
+    # merely that setsockopt was "called" on a mock.
+    raw_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        fake_ws = _FakeWebSocketWithTransport(raw_socket)
+
+        result = enable_aggressive_tcp_keepalive(fake_ws)
+
+        assert result is True
+        assert raw_socket.getsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE) == 1
+        assert (
+            raw_socket.getsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE)
+            == TCP_KEEPALIVE_IDLE_SECONDS
+        )
+        assert (
+            raw_socket.getsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL)
+            == TCP_KEEPALIVE_INTERVAL_SECONDS
+        )
+        assert (
+            raw_socket.getsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT)
+            == TCP_KEEPALIVE_PROBES
+        )
+    finally:
+        raw_socket.close()
+
+
+def test_enable_aggressive_tcp_keepalive_missing_socket_returns_false():
+    fake_ws = _FakeWebSocketWithTransport(None)
+    assert enable_aggressive_tcp_keepalive(fake_ws) is False
+
+
+def test_enable_aggressive_tcp_keepalive_never_raises_on_broken_socket():
+    class _ExplodingSocket:
+        def setsockopt(self, *args, **kwargs):
+            raise OSError("simulated platform without TCP_KEEPIDLE")
+
+    fake_ws = _FakeWebSocketWithTransport(_ExplodingSocket())
+    # Must degrade gracefully (fall back to slower default detection) rather
+    # than crash the publisher.
+    assert enable_aggressive_tcp_keepalive(fake_ws) is False

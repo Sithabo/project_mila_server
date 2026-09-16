@@ -252,6 +252,92 @@ Both publishers use the same bounded exponential backoff + jitter
   state (no queue), reconnects, re-authenticates, and resumes from the newest
   state. It never replays telemetry history.
 
+### Level 3B1-B4: silent dead-connection fix (TCP keepalive)
+
+Diagnosed a real production incident: after the Jetson's Internet WiFi network
+changed, the telemetry publisher's existing WebSocket connection was orphaned
+— confirmed via `ss -tn`, its local socket address was still bound to the
+*previous* network's now-invalid source IP, with data backed up unsent in the
+kernel's TCP send buffer (`Send-Q` non-zero and growing). Neither the
+application (`send()` kept "succeeding" — the OS accepted the bytes into its
+buffer without error) nor the `websockets` library's default ping/pong
+keepalive (`ping_interval=20s`, `ping_timeout=20s`) detected this for over 15
+minutes, because the ping/pong frames suffer the identical fate — they queue
+into the same doomed buffer instead of reaching the peer. Detection only
+happens once Linux's own TCP retransmission-timeout logic eventually gives up,
+which defaults to many minutes.
+
+**Fix** (`telemetry/publisher.py:enable_aggressive_tcp_keepalive`): immediately
+after connecting, configure kernel-level TCP keepalive on the raw socket
+(`SO_KEEPALIVE` + `TCP_KEEPIDLE=5s` + `TCP_KEEPINTVL=3s` + `TCP_KEEPCNT=3`),
+so the *kernel itself* probes for and detects an unreachable peer in
+~5 + 3×3 = 14 seconds, surfacing it as a connection error that triggers the
+existing (already-correct) reconnect/backoff logic much sooner. Verified live:
+after applying the fix and restarting the publisher, its socket correctly
+bound to the new network's current IP, and two samples taken 150 seconds
+apart showed the sequence number advancing by ~1,577 (≈10.5 msg/s, matching
+the 10 Hz target) with fresh timestamps and fresh `cameras.front`/`system`
+data each time — confirming the earlier stale-cached-state failure mode no
+longer reproduces.
+
+## Cross-network test topology (Level 3B1-B4)
+
+Validated test topology, all traffic routed through the public OCI relay —
+no local peer-to-peer path between the Jetson and the operator laptop:
+
+```
+Jetson (ATT WiFi)
+    |
+    v
+Internet
+    |
+    v
+OCI (147.224.145.24)
+    |
+    v
+Internet
+    |
+    v
+Operator/sender laptop (OU WiFi)
+```
+
+The Jetson and the operator laptop are deliberately on two different, unrelated
+networks (ATT WiFi vs. OU WiFi) to validate that the visualization path works
+correctly over the public Internet rather than only over shared local-network
+conditions. The Septentrio GNSS receiver's dedicated network interface
+(`enx1a3202991545`, `192.168.3.0/24`, the `septentrio` NetworkManager profile)
+is entirely separate from the Jetson's Internet-facing WiFi and is not affected
+by which WiFi network the Jetson uses for Internet access.
+
+## Temporary communication-test camera placement
+
+**LEFT and RIGHT cameras are currently temporarily located inside the vehicle**
+(not in their final exterior mounting positions) purely for convenience during
+communication/streaming testing — the Orin is inside the vehicle, and routing
+camera cables through the windows for this phase of testing was impractical.
+Their logical roles (`left`/`right`) and USB bus paths
+(`usb-4.1.2.2`/`usb-2.3`, see `docs/CAMERA_TOPOLOGY.md`) are unchanged; only the
+physical camera lens position/aim is temporary. This placement is sufficient
+for validating the communication pipeline (capture → encode → SRT → OCI →
+reader) but **not** for validating final exterior camera views — that requires
+a separate visual role/view confirmation once the cameras are mounted in their
+final exterior positions. If the USB physical ports change when the cameras
+are moved to their final positions, the four-camera USB topology must be
+revalidated (see the existing "DO NOT MOVE THE VALIDATED CAMERA CABLING
+WITHOUT REVALIDATION" warning in `docs/CAMERA_TOPOLOGY.md`).
+
+## FRONT configuration lock
+
+The FRONT encoder/mux/SRT configuration (`poc-type=2`, `idrinterval=20`,
+`iframeinterval=20`, `insert-sps-pps=true`, `h264parse config-interval=-1`,
+explicit `video/x-h264,stream-format=byte-stream,alignment=au` caps,
+`mpegtsmux alignment=7 pat-interval=9000 pmt-interval=9000`, 800x600@20fps) is
+**locked** after a successful ~10-minute remote stability test: 12,170 decoded
+frames over 610 seconds, ~20 FPS decoded/wall-clock, 0 reordered-frame errors,
+0 unexpected reader disconnects, 0 reconnects, 0 MediaMTX PES errors. Do not
+modify this configuration without a documented reason and a fresh validation
+pass.
+
 ## Control separation (non-negotiable)
 
 This implementation never uses UDP port 4210, never imports or invokes G29/ESP32

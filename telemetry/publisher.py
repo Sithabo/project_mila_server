@@ -6,6 +6,24 @@ snapshot). On disconnect, reconnects independently with bounded exponential
 backoff + jitter, re-authenticates, and resumes from the newest state; it
 never replays telemetry history. Never logs the auth token or a subscriber
 credential — only Jetson-required variables are read from the secret file.
+
+Level 3B1-B4 fix: after switching the Jetson's Internet WiFi network, the
+telemetry publisher's existing WebSocket connection silently died — the
+kernel TCP socket stayed in ESTABLISHED state (still bound to the old
+network's now-invalid source IP) with data backed up unsent in its send
+buffer, and neither the application (send() kept "succeeding" — the OS
+buffered the bytes without error) nor the websockets library's default
+ping/pong keepalive (ping_interval=20s, ping_timeout=20s) detected it for
+over 15 minutes. Root cause: the library's ping/pong frames suffer the exact
+same fate as application data on a connection whose underlying route is
+gone — they queue into the same doomed kernel send buffer instead of
+actually reaching the peer, so timeout only occurs once Linux's own TCP
+retransmission-timeout logic gives up, which defaults to many minutes.
+Fix: enable aggressive kernel-level TCP keepalive (SO_KEEPALIVE +
+TCP_KEEPIDLE/INTVL/CNT) on the raw socket immediately after connecting, so
+the kernel itself detects an unreachable peer in ~15 seconds and surfaces it
+as a connection error — triggering the existing (already correct) reconnect
+logic much sooner.
 """
 from __future__ import annotations
 
@@ -17,6 +35,7 @@ import json
 import logging
 import random
 import signal
+import socket
 import sys
 import threading
 import time
@@ -51,6 +70,17 @@ JETSON_REQUIRED_VARS = ["OCI_VISUALIZATION_HOST", "TELEMETRY_PORT", "TELEMETRY_P
 BACKOFF_BASE_SECONDS = 1.0
 BACKOFF_CAP_SECONDS = 30.0
 PUBLISH_INTERVAL_SECONDS = 0.1  # ~10 Hz target
+
+# Kernel-level TCP keepalive tuning (see module docstring: Level 3B1-B4 fix).
+# Detects an unreachable peer (e.g. the local network interface/IP changed
+# under a live connection) in ~TCP_KEEPALIVE_IDLE_SECONDS +
+# TCP_KEEPALIVE_PROBES * TCP_KEEPALIVE_INTERVAL_SECONDS seconds, instead of
+# relying on the application-level ping/pong keepalive or the OS's default
+# multi-minute TCP retransmission timeout, both of which were confirmed too
+# slow for this failure mode.
+TCP_KEEPALIVE_IDLE_SECONDS = 5
+TCP_KEEPALIVE_INTERVAL_SECONDS = 3
+TCP_KEEPALIVE_PROBES = 3
 
 # Written by video/publisher.py (see STATUS_DIR there). A missing or stale
 # file means "unknown" — the cameras.front block is omitted rather than
@@ -98,6 +128,29 @@ def read_temperature_c() -> float | None:
         return float(raw_millidegrees) / 1000.0
     except (FileNotFoundError, ValueError, OSError):
         return None
+
+
+def enable_aggressive_tcp_keepalive(websocket) -> bool:
+    """Configure kernel-level TCP keepalive on the connection's raw socket so
+    an unreachable peer (e.g. a local network interface/IP change orphaning
+    this connection) is detected in seconds, not minutes. Best effort: if the
+    socket can't be reached or the platform lacks these options, this must
+    never crash the publisher — just fall back to the slower default
+    detection path. Returns True if keepalive was successfully configured."""
+    try:
+        raw_socket = websocket.transport.get_extra_info("socket")
+        if raw_socket is None:
+            return False
+        raw_socket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        raw_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, TCP_KEEPALIVE_IDLE_SECONDS)
+        raw_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, TCP_KEEPALIVE_INTERVAL_SECONDS)
+        raw_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, TCP_KEEPALIVE_PROBES)
+        return True
+    except (AttributeError, OSError):
+        logger.debug("could not enable TCP keepalive on telemetry socket", exc_info=True)
+        return False
+
+
 AUTH_TIMEOUT_SECONDS = 5.0
 
 
@@ -233,6 +286,8 @@ class TelemetryPublisher:
 
     async def _run_connection(self, uri: str, token: str) -> None:
         async with connect(uri, compression=None, open_timeout=5) as websocket:
+            keepalive_enabled = enable_aggressive_tcp_keepalive(websocket)
+            logger.info("tcp keepalive configured: %s", keepalive_enabled)
             await self._authenticate(websocket, token)
             logger.info("telemetry publisher authenticated")
             self.state.connection_state = "running"
