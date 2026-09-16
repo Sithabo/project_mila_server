@@ -1,6 +1,7 @@
 import asyncio
 import json
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,7 @@ from telemetry.publisher import (  # noqa: E402
     TelemetryPublisher,
     compute_backoff_delay,
     load_jetson_secrets,
+    read_front_camera_status,
 )
 
 
@@ -95,3 +97,74 @@ def test_build_message_has_no_gnss_when_ros2_data_unavailable():
     assert message["schema_version"] == 1
     assert message["message_type"] == "vehicle_visualization"
     assert "gnss" not in message
+
+
+def test_build_message_includes_real_system_block():
+    publisher = TelemetryPublisher(_FakeNode())
+    message = publisher._build_message()
+    # Real, locally-measured values — not fabricated. uptime_s and
+    # temperature_c may be None on a machine without /proc/uptime or a
+    # thermal zone, but the key must be present and cpu/memory percent must
+    # be real numbers from psutil.
+    assert "system" in message
+    assert isinstance(message["system"]["cpu_percent"], (int, float))
+    assert isinstance(message["system"]["memory_percent"], (int, float))
+
+
+def test_read_front_camera_status_missing_file_returns_none(tmp_path):
+    missing = tmp_path / "does_not_exist.json"
+    assert read_front_camera_status(missing) is None
+
+
+def test_read_front_camera_status_fresh_file_returns_block(tmp_path):
+    status_file = tmp_path / "front_status.json"
+    status_file.write_text(
+        json.dumps(
+            {
+                "stream_path": "front",
+                "healthy": True,
+                "fps": 20,
+                "updated_at_monotonic": time.monotonic(),
+            }
+        )
+    )
+    result = read_front_camera_status(status_file)
+    assert result is not None
+    assert result["stream_path"] == "front"
+    assert result["healthy"] is True
+    assert result["fps"] == 20
+    assert result["last_frame_age_s"] < 1.0
+
+
+def test_read_front_camera_status_stale_file_returns_none(tmp_path):
+    status_file = tmp_path / "front_status.json"
+    status_file.write_text(
+        json.dumps(
+            {
+                "stream_path": "front",
+                "healthy": True,
+                "fps": 20,
+                # 100 seconds old — far beyond the staleness threshold, as if
+                # the video publisher process died without cleanup.
+                "updated_at_monotonic": time.monotonic() - 100.0,
+            }
+        )
+    )
+    assert read_front_camera_status(status_file) is None
+
+
+def test_read_front_camera_status_malformed_json_returns_none(tmp_path):
+    status_file = tmp_path / "front_status.json"
+    status_file.write_text("not valid json{{{")
+    assert read_front_camera_status(status_file) is None
+
+
+def test_send_rate_measured_from_real_send_timestamps():
+    publisher = TelemetryPublisher(_FakeNode())
+    assert publisher._measured_send_rate_hz() is None  # no samples yet
+    for _ in range(5):
+        publisher._build_message()
+        time.sleep(0.01)
+    rate = publisher._measured_send_rate_hz()
+    assert rate is not None
+    assert rate > 0

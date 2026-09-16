@@ -48,18 +48,66 @@ rather than guessing. See `tests/test_camera_resolver.py`.
 
 ```
 v4l2src -> MJPEG 800x600@20 -> jpegdec -> I420 -> nvvidconv -> NVMM
-  -> nvv4l2h264enc -> h264parse -> mpegtsmux -> srtsink
+  -> nvv4l2h264enc -> h264parse -> explicit video/x-h264 caps -> mpegtsmux -> srtsink
 ```
 
 Encoder settings (`config/video.yaml`), confirmed via `gst-inspect-1.0
-nvv4l2h264enc`/`h264parse` on the installed plugin versions rather than guessed:
+nvv4l2h264enc`/`h264parse`/`mpegtsmux` on the installed plugin versions rather than
+guessed:
 
 - `idrinterval=20`, `iframeinterval=20` — ~1 second IDR spacing at 20 FPS
 - `insert-sps-pps=true` — repeats SPS/PPS at every IDR
 - `h264parse config-interval=-1` — repeats codec config with every IDR
+- `video/x-h264,stream-format=byte-stream,alignment=au` — explicit caps between
+  `h264parse` and `mpegtsmux`, pinned rather than left to implicit negotiation
+- `mpegtsmux alignment=7` — **the Level 3B1-B2 fix** (see below)
+- `mpegtsmux pat-interval=9000 pmt-interval=9000` — PAT/PMT repeated every 9000
+  ticks of the 90kHz MPEG-TS clock (100ms), well within the sub-second range a
+  late reader needs to discover the program quickly
 - `mpegtsmux` before `srtsink` — required; feeding elementary H.264 directly to
   `srtsink` does not satisfy the validated payload contract (a late reader could not
   reliably attach)
+
+### Level 3B1-B2: MPEG-TS/SRT decodability fix
+
+Remote validation of the first FRONT implementation found: SRT transport and
+authentication were healthy, MediaMTX recognized an H.264 track, but the reader
+decoded **zero frames** and MediaMTX logged MPEG-TS PES parsing errors.
+
+Root cause, found via `gst-inspect-1.0 mpegtsmux` rather than guessed: the
+`alignment` property was left at its default (`-1` = auto). The property's own
+documentation states: *"Number of packets per buffer ... (-1 = auto, 0 = all
+available packets, **7 for UDP streaming**)"*. SRT runs over UDP, and `7 * 188`-byte
+TS packets = 1316 bytes — exactly the validated SRT `pkt_size=1316`. Leaving this at
+auto meant `mpegtsmux` was not producing buffers aligned to the transport's packet
+size, consistent with a receiver losing PES/TS packet sync. The `h264parse` output
+caps were also left to implicit negotiation rather than pinned explicitly.
+
+**Fix:** added the explicit `video/x-h264,stream-format=byte-stream,alignment=au`
+caps filter after `h264parse`, and set `mpegtsmux alignment=7` plus explicit
+`pat-interval`/`pmt-interval`.
+
+**Local validation before re-publishing to OCI** (`tests/test_video_pipeline.py`
+covers the argv structure; the actual GStreamer run was manual, not unit-tested,
+since it requires real hardware):
+- 30-second local `.ts` file capture using the identical encode/mux chain
+  (`video/pipeline.py:build_local_ts_test_args`), terminated via natural EOS
+  (`num-buffers`, not an external signal — an abrupt `SIGTERM` was found to
+  truncate the final buffer, which is a file-write artifact, not a live-streaming
+  concern, but worth knowing: use `-e` and let a live stream reach EOS/shutdown
+  gracefully rather than SIGKILL).
+- `ffprobe`: `mpegts` container, `h264` codec, `800x600`, `20/1` frame rate.
+- Full decode via `ffmpeg -f null -`: 600/600 frames, zero warnings, zero corrupt
+  packets.
+- **Late-start decodability** (the actual reported failure mode — a reader
+  attaching mid-stream, not from byte zero): seeking 20 seconds into the 30-second
+  file and decoding from there succeeded cleanly (200/200 remaining frames, codec
+  correctly identified as `h264 (Constrained Baseline)`), confirming a late
+  reader can find SPS/PPS/PAT/PMT and decode without needing the stream start.
+
+Real OCI re-publication after the fix ran stably for 179.6s and, in a later
+combined run, another 183.6s — both well past the required 2-minute window, zero
+reconnects, zero GStreamer errors either time.
 
 ## MediaMTX/SRT contract
 
@@ -108,6 +156,33 @@ when real data is available. All non-finite floats (NaN/Infinity) are recursivel
 replaced with `null` before serialization (`sanitize()`), and `serialize()` calls
 `json.dumps(..., allow_nan=False)` as a second, defense-in-depth check, and enforces
 the 65,536-byte relay limit.
+
+### `cameras.front` and `system` health blocks
+
+The telemetry publisher and video publisher are separate processes with no direct
+coupling. `video/publisher.py` writes a small non-secret status file
+(`runs/front_status.json`, gitignored) once per second while its pipeline is
+running — `stream_path`, `healthy` (real process-alive state), `fps` (the
+configured capture rate — accurate for a live, real-time `v4l2src` pipeline, not
+a batch/offline one), and a `time.monotonic()` timestamp. `time.monotonic()` is
+`CLOCK_MONOTONIC` on Linux, a system-wide clock, so comparing a timestamp written
+by one process against `time.monotonic()` read in another is valid.
+
+`telemetry/publisher.py:read_front_camera_status()` reads that file each tick. If
+it's missing, malformed, or older than 3 seconds (the video publisher died without
+cleanup), the `cameras.front` block is **omitted entirely** rather than reporting
+fabricated health — matching the handoff doc's "use null or omit ... do not invent
+sensor values" rule. On its own shutdown, the video publisher writes a final
+`healthy: false` status so a lingering stale-but-recent file doesn't misreport
+health during its own shutdown window.
+
+The `system` block uses real, locally-measured values: `psutil.cpu_percent()`/
+`psutil.virtual_memory().percent` (system-wide, not per-process), `/proc/uptime`
+for `uptime_s`, `/sys/class/thermal/thermal_zone0/temp` for `temperature_c`, and
+`telemetry_rate_hz` computed from the actual measured interval between the last 20
+sent messages (not the configured target) — confirmed in a real run to read
+~9.7 Hz against a 10 Hz target, i.e. an honest measurement, not the hardcoded
+target value.
 
 ## Telemetry WebSocket publisher
 

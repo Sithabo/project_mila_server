@@ -8,7 +8,12 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from video.pipeline import build_publish_uri  # noqa: E402
-from video.publisher import compute_backoff_delay, load_jetson_secrets, redact_argv  # noqa: E402
+from video.publisher import (  # noqa: E402
+    FrontPublisher,
+    compute_backoff_delay,
+    load_jetson_secrets,
+    redact_argv,
+)
 
 
 def test_redact_argv_hides_uri_value():
@@ -100,3 +105,27 @@ def test_backoff_delay_jitter_range():
     # rand in [0, 1) maps the multiplier into [0.5, 1.5).
     assert low == pytest.approx(0.5)
     assert high == pytest.approx(1.5, rel=1e-3)
+
+
+def test_write_status_produces_valid_json_telemetry_can_read(tmp_path):
+    publisher = FrontPublisher(role="front", repo_root=tmp_path)
+    publisher._write_status(healthy=True, fps=20.0)
+
+    status_file = tmp_path / "runs" / "front_status.json"
+    assert status_file.exists()
+    data = json.loads(status_file.read_text())
+    assert data["stream_path"] == "front"
+    assert data["healthy"] is True
+    assert data["fps"] == 20.0
+    assert isinstance(data["updated_at_monotonic"], float)
+
+
+def test_write_status_unhealthy_on_shutdown(tmp_path):
+    publisher = FrontPublisher(role="front", repo_root=tmp_path)
+    publisher._write_status(healthy=True, fps=20.0)
+    publisher._write_status(healthy=False, fps=None)
+
+    status_file = tmp_path / "runs" / "front_status.json"
+    data = json.loads(status_file.read_text())
+    assert data["healthy"] is False
+    assert data["fps"] is None

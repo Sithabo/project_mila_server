@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import collections
 import contextlib
 import json
 import logging
@@ -23,6 +24,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+import psutil
 import rclpy
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed
@@ -30,10 +32,16 @@ from websockets.exceptions import ConnectionClosed
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from telemetry.ros2_adapter import TelemetrySourceNode  # noqa: E402
-from telemetry.schema import build_telemetry_message, serialize  # noqa: E402
+from telemetry.schema import (  # noqa: E402
+    build_camera_health_block,
+    build_system_block,
+    build_telemetry_message,
+    serialize,
+)
 
 logger = logging.getLogger(__name__)
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_SECRET_FILE = Path("/home/mila/.config/teleop_visualization/oci_visualization.env")
 
 # Only these variables are ever read — no reader/subscriber credentials, no
@@ -43,6 +51,53 @@ JETSON_REQUIRED_VARS = ["OCI_VISUALIZATION_HOST", "TELEMETRY_PORT", "TELEMETRY_P
 BACKOFF_BASE_SECONDS = 1.0
 BACKOFF_CAP_SECONDS = 30.0
 PUBLISH_INTERVAL_SECONDS = 0.1  # ~10 Hz target
+
+# Written by video/publisher.py (see STATUS_DIR there). A missing or stale
+# file means "unknown" — the cameras.front block is omitted rather than
+# fabricated. time.monotonic() is CLOCK_MONOTONIC on Linux, which is a
+# system-wide (not per-process) clock, so comparing a timestamp written by
+# the video publisher process against time.monotonic() read here is valid.
+FRONT_STATUS_FILE = REPO_ROOT / "runs" / "front_status.json"
+FRONT_STATUS_STALE_AFTER_SECONDS = 3.0
+
+THERMAL_ZONE_PATH = Path("/sys/class/thermal/thermal_zone0/temp")
+SEND_RATE_WINDOW_SIZE = 20  # samples used to compute the measured send rate
+
+
+def read_front_camera_status(status_file: Path = FRONT_STATUS_FILE) -> dict | None:
+    try:
+        with open(status_file, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return None
+    updated_at = data.get("updated_at_monotonic")
+    if not isinstance(updated_at, (int, float)):
+        return None
+    age_s = time.monotonic() - updated_at
+    if age_s > FRONT_STATUS_STALE_AFTER_SECONDS or age_s < 0:
+        return None
+    return build_camera_health_block(
+        stream_path=data.get("stream_path", "front"),
+        healthy=bool(data.get("healthy", False)),
+        fps=data.get("fps"),
+        last_frame_age_s=round(age_s, 3),
+    )
+
+
+def read_system_uptime_s() -> float | None:
+    try:
+        with open("/proc/uptime", "r", encoding="utf-8") as handle:
+            return float(handle.readline().split()[0])
+    except (FileNotFoundError, ValueError, OSError):
+        return None
+
+
+def read_temperature_c() -> float | None:
+    try:
+        raw_millidegrees = THERMAL_ZONE_PATH.read_text(encoding="utf-8").strip()
+        return float(raw_millidegrees) / 1000.0
+    except (FileNotFoundError, ValueError, OSError):
+        return None
 AUTH_TIMEOUT_SECONDS = 5.0
 
 
@@ -101,13 +156,44 @@ class TelemetryPublisher:
         self.state = TelemetryPublisherState()
         self._sequence = 0
         self._shutdown_requested = False
+        self._send_timestamps: collections.deque[float] = collections.deque(
+            maxlen=SEND_RATE_WINDOW_SIZE
+        )
+        # First call after process start compares against no prior sample and
+        # returns a meaningless value; discard it so later calls in
+        # _build_system_block give real interval-based percentages.
+        psutil.cpu_percent(interval=None)
 
     def request_shutdown(self, *_args) -> None:
         logger.info("telemetry shutdown requested")
         self._shutdown_requested = True
 
+    def _measured_send_rate_hz(self) -> float | None:
+        if len(self._send_timestamps) < 2:
+            return None
+        span = self._send_timestamps[-1] - self._send_timestamps[0]
+        if span <= 0:
+            return None
+        return (len(self._send_timestamps) - 1) / span
+
+    def _build_system_block(self) -> dict:
+        return build_system_block(
+            uptime_s=read_system_uptime_s(),
+            cpu_percent=psutil.cpu_percent(interval=None),
+            memory_percent=psutil.virtual_memory().percent,
+            temperature_c=read_temperature_c(),
+            telemetry_rate_hz=self._measured_send_rate_hz(),
+        )
+
+    def _build_cameras_block(self) -> dict | None:
+        front_status = read_front_camera_status()
+        if front_status is None:
+            return None
+        return {"front": front_status}
+
     def _build_message(self) -> dict:
         self._sequence += 1
+        self._send_timestamps.append(time.monotonic())
         gnss = self.node.get_latest_gnss_sample()
         xsens_heading_deg = self.node.get_latest_xsens_heading_deg()
         return build_telemetry_message(
@@ -115,6 +201,8 @@ class TelemetryPublisher:
             timestamp_utc=_now_iso_utc(),
             timestamp_monotonic_s=time.monotonic(),
             gnss=gnss,
+            cameras=self._build_cameras_block(),
+            system_info=self._build_system_block(),
             xsens_heading_deg=xsens_heading_deg,
         )
 

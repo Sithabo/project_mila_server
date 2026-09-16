@@ -9,12 +9,14 @@ ever spawns/supervises a single gst-launch-1.0 child process for one camera.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import random
 import signal
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -55,6 +57,13 @@ PASSPHRASE_VAR_BY_ROLE = {
 MIN_STABLE_SECONDS = 5.0  # a run shorter than this counts as a failed attempt
 BACKOFF_BASE_SECONDS = 1.0
 BACKOFF_CAP_SECONDS = 30.0
+
+# Local, non-secret status file written by this publisher and read by
+# telemetry/publisher.py to populate the optional cameras.<role> telemetry
+# block honestly (real process-alive state + configured fps), rather than
+# coupling the two processes directly. Gitignored (see .gitignore "runs/").
+STATUS_DIR_NAME = "runs"
+STATUS_WRITE_INTERVAL_SECONDS = 1.0
 
 
 def compute_backoff_delay(
@@ -97,6 +106,8 @@ def load_video_config(config_path: Path) -> VideoConfig:
         raw = yaml.safe_load(handle)
     capture = raw["capture"]
     encoder = raw["encoder"]
+    h264parse_cfg = raw["h264parse"]
+    mpegts_cfg = raw["mpegts"]
     return VideoConfig(
         width=capture["width"],
         height=capture["height"],
@@ -105,7 +116,12 @@ def load_video_config(config_path: Path) -> VideoConfig:
         idr_interval_frames=encoder["idr_interval_frames"],
         iframe_interval_frames=encoder["iframe_interval_frames"],
         insert_sps_pps=encoder["insert_sps_pps"],
-        h264parse_config_interval=raw["h264parse"]["config_interval"],
+        h264parse_config_interval=h264parse_cfg["config_interval"],
+        h264_stream_format=h264parse_cfg["stream_format"],
+        h264_alignment=h264parse_cfg["alignment"],
+        mpegts_alignment=mpegts_cfg["alignment"],
+        mpegts_pat_interval_ticks=mpegts_cfg["pat_interval_ticks"],
+        mpegts_pmt_interval_ticks=mpegts_cfg["pmt_interval_ticks"],
         srt_pkt_size=raw["srt"]["pkt_size"],
     )
 
@@ -144,7 +160,7 @@ class FrontPublisher:
         usb_path = roles[self.role]
         return resolve_camera(self.role, usb_path)
 
-    def _build_argv(self) -> tuple[list[str], str]:
+    def _build_argv(self) -> tuple[list[str], str, VideoConfig]:
         image_node = self._resolve_camera().image_node
         video_config = load_video_config(self.repo_root / "config" / "video.yaml")
         secrets = load_jetson_secrets()
@@ -160,7 +176,37 @@ class FrontPublisher:
             pkt_size=video_config.srt_pkt_size,
         )
         argv = build_gst_launch_args(image_node, video_config, srt_uri)
-        return argv, image_node
+        return argv, image_node, video_config
+
+    def _status_dir(self) -> Path:
+        return self.repo_root / STATUS_DIR_NAME
+
+    def _status_file(self) -> Path:
+        return self._status_dir() / f"{self.role}_status.json"
+
+    def _write_status(self, healthy: bool, fps: float | None) -> None:
+        """Write a small non-secret status file for telemetry to read. Best
+        effort: a failure here must never affect video publication."""
+        try:
+            self._status_dir().mkdir(parents=True, exist_ok=True)
+            status = {
+                "stream_path": self.role,
+                "healthy": healthy,
+                "fps": fps,
+                "updated_at_monotonic": time.monotonic(),
+            }
+            tmp_path = self._status_file().with_suffix(".tmp")
+            with open(tmp_path, "w", encoding="utf-8") as handle:
+                json.dump(status, handle)
+            tmp_path.replace(self._status_file())
+        except OSError:
+            logger.debug("failed to write status file for role=%s", self.role, exc_info=True)
+
+    def _status_writer_loop(self, video_config: VideoConfig, stop_event: threading.Event) -> None:
+        while not stop_event.is_set():
+            healthy = self._child is not None and self._child.poll() is None
+            self._write_status(healthy=healthy, fps=video_config.framerate)
+            stop_event.wait(STATUS_WRITE_INTERVAL_SECONDS)
 
     def request_shutdown(self, *_args) -> None:
         logger.info("shutdown requested (role=%s)", self.role)
@@ -169,7 +215,7 @@ class FrontPublisher:
             self._child.send_signal(signal.SIGTERM)
 
     def _run_once(self) -> None:
-        argv, image_node = self._build_argv()
+        argv, image_node, video_config = self._build_argv()
         logger.info(
             "starting pipeline role=%s image_node=%s argv=%s",
             self.role,
@@ -185,19 +231,32 @@ class FrontPublisher:
         self.state.connection_state = "running"
         start_time = time.time()
 
-        while True:
-            if self._child.poll() is not None:
-                break
-            line = self._child.stdout.readline() if self._child.stdout else ""
-            if line:
-                # gst-launch -e output does not contain the URI after
-                # startup; still guard against accidental leakage.
-                logger.debug("[%s] %s", self.role, line.rstrip())
-            elapsed = time.time() - start_time
-            if elapsed >= MIN_STABLE_SECONDS:
-                self.state.last_successful_publish_ts = time.time()
-            if self._shutdown_requested:
-                break
+        status_stop_event = threading.Event()
+        status_thread = threading.Thread(
+            target=self._status_writer_loop,
+            args=(video_config, status_stop_event),
+            daemon=True,
+        )
+        status_thread.start()
+
+        try:
+            while True:
+                if self._child.poll() is not None:
+                    break
+                line = self._child.stdout.readline() if self._child.stdout else ""
+                if line:
+                    # gst-launch -e output does not contain the URI after
+                    # startup; still guard against accidental leakage.
+                    logger.debug("[%s] %s", self.role, line.rstrip())
+                elapsed = time.time() - start_time
+                if elapsed >= MIN_STABLE_SECONDS:
+                    self.state.last_successful_publish_ts = time.time()
+                if self._shutdown_requested:
+                    break
+        finally:
+            status_stop_event.set()
+            status_thread.join(timeout=2)
+            self._write_status(healthy=False, fps=None)
 
         return_code = self._child.wait(timeout=10)
         elapsed = time.time() - start_time

@@ -94,6 +94,36 @@ def build_gnss_block(gnss: GnssSample, xsens_heading_deg: float | None) -> dict:
     }
 
 
+def build_camera_health_block(
+    stream_path: str,
+    healthy: bool,
+    fps: float | None = None,
+    last_frame_age_s: float | None = None,
+) -> dict:
+    return {
+        "stream_path": stream_path,
+        "healthy": healthy,
+        "fps": fps,
+        "last_frame_age_s": last_frame_age_s,
+    }
+
+
+def build_system_block(
+    uptime_s: float | None,
+    cpu_percent: float | None,
+    memory_percent: float | None,
+    temperature_c: float | None,
+    telemetry_rate_hz: float | None,
+) -> dict:
+    return {
+        "uptime_s": uptime_s,
+        "cpu_percent": cpu_percent,
+        "memory_percent": memory_percent,
+        "temperature_c": temperature_c,
+        "telemetry_rate_hz": telemetry_rate_hz,
+    }
+
+
 def build_telemetry_message(
     sequence: int,
     timestamp_utc: str,
