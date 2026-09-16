@@ -10,6 +10,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from telemetry.publisher import (  # noqa: E402
+    CAMERA_ROLES,
     TCP_KEEPALIVE_IDLE_SECONDS,
     TCP_KEEPALIVE_INTERVAL_SECONDS,
     TCP_KEEPALIVE_PROBES,
@@ -17,6 +18,8 @@ from telemetry.publisher import (  # noqa: E402
     compute_backoff_delay,
     enable_aggressive_tcp_keepalive,
     load_jetson_secrets,
+    read_all_camera_statuses,
+    read_camera_status,
     read_front_camera_status,
 )
 
@@ -232,3 +235,89 @@ def test_enable_aggressive_tcp_keepalive_never_raises_on_broken_socket():
     # Must degrade gracefully (fall back to slower default detection) rather
     # than crash the publisher.
     assert enable_aggressive_tcp_keepalive(fake_ws) is False
+
+
+# --- Level 3B2-A: multi-camera telemetry status ---------------------------
+
+
+def _write_status(path, role, healthy=True, fps=20, age_s=0.0):
+    path.write_text(
+        json.dumps(
+            {
+                "stream_path": role,
+                "healthy": healthy,
+                "fps": fps,
+                "updated_at_monotonic": time.monotonic() - age_s,
+            }
+        )
+    )
+
+
+def test_camera_roles_covers_all_four():
+    assert set(CAMERA_ROLES) == {"front", "left", "right", "cabin"}
+
+
+@pytest.mark.parametrize("role", ["front", "left", "right", "cabin"])
+def test_read_camera_status_works_for_every_role(tmp_path, role):
+    status_file = tmp_path / f"{role}_status.json"
+    _write_status(status_file, role)
+
+    result = read_camera_status(role, status_file)
+
+    assert result is not None
+    assert result["stream_path"] == role
+    assert result["healthy"] is True
+    assert result["fps"] == 20
+
+
+def test_read_all_camera_statuses_returns_only_fresh_roles(monkeypatch, tmp_path):
+    import telemetry.publisher as telemetry_publisher_module
+
+    monkeypatch.setattr(telemetry_publisher_module, "STATUS_DIR", tmp_path)
+
+    _write_status(tmp_path / "front_status.json", "front")
+    _write_status(tmp_path / "left_status.json", "left")
+    # right/cabin: no file at all — must be omitted, not fabricated.
+
+    statuses = read_all_camera_statuses()
+
+    assert set(statuses.keys()) == {"front", "left"}
+    assert statuses["front"]["stream_path"] == "front"
+    assert statuses["left"]["stream_path"] == "left"
+
+
+def test_read_all_camera_statuses_omits_stale_roles(monkeypatch, tmp_path):
+    import telemetry.publisher as telemetry_publisher_module
+
+    monkeypatch.setattr(telemetry_publisher_module, "STATUS_DIR", tmp_path)
+
+    _write_status(tmp_path / "front_status.json", "front", age_s=0.0)
+    _write_status(tmp_path / "cabin_status.json", "cabin", age_s=100.0)  # stale
+
+    statuses = read_all_camera_statuses()
+
+    assert set(statuses.keys()) == {"front"}
+
+
+def test_read_all_camera_statuses_empty_when_no_files(monkeypatch, tmp_path):
+    import telemetry.publisher as telemetry_publisher_module
+
+    monkeypatch.setattr(telemetry_publisher_module, "STATUS_DIR", tmp_path)
+
+    assert read_all_camera_statuses() == {}
+
+
+def test_build_cameras_block_supports_multiple_simultaneous_roles(monkeypatch, tmp_path):
+    import telemetry.publisher as telemetry_publisher_module
+
+    monkeypatch.setattr(telemetry_publisher_module, "STATUS_DIR", tmp_path)
+    for role in ["front", "left", "right", "cabin"]:
+        _write_status(tmp_path / f"{role}_status.json", role)
+
+    publisher = TelemetryPublisher(_FakeNode())
+    message = publisher._build_message()
+
+    assert set(message["cameras"].keys()) == {"front", "left", "right", "cabin"}
+    for role in ["front", "left", "right", "cabin"]:
+        assert message["cameras"][role]["stream_path"] == role
+        assert message["cameras"][role]["healthy"] is True

@@ -9,7 +9,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from video.pipeline import build_publish_uri  # noqa: E402
 from video.publisher import (  # noqa: E402
-    FrontPublisher,
+    CameraPublisher,
+    PASSPHRASE_VAR_BY_ROLE,
     compute_backoff_delay,
     load_jetson_secrets,
     redact_argv,
@@ -108,7 +109,7 @@ def test_backoff_delay_jitter_range():
 
 
 def test_write_status_produces_valid_json_telemetry_can_read(tmp_path):
-    publisher = FrontPublisher(role="front", repo_root=tmp_path)
+    publisher = CameraPublisher(role="front", repo_root=tmp_path)
     publisher._write_status(healthy=True, fps=20.0)
 
     status_file = tmp_path / "runs" / "front_status.json"
@@ -121,7 +122,7 @@ def test_write_status_produces_valid_json_telemetry_can_read(tmp_path):
 
 
 def test_write_status_unhealthy_on_shutdown(tmp_path):
-    publisher = FrontPublisher(role="front", repo_root=tmp_path)
+    publisher = CameraPublisher(role="front", repo_root=tmp_path)
     publisher._write_status(healthy=True, fps=20.0)
     publisher._write_status(healthy=False, fps=None)
 
@@ -129,3 +130,131 @@ def test_write_status_unhealthy_on_shutdown(tmp_path):
     data = json.loads(status_file.read_text())
     assert data["healthy"] is False
     assert data["fps"] is None
+
+
+# --- Level 3B2-A: multi-camera role support -------------------------------
+
+
+def test_all_four_roles_have_a_distinct_passphrase_variable():
+    assert PASSPHRASE_VAR_BY_ROLE == {
+        "front": "FRONT_SRT_PUBLISH_PASSPHRASE",
+        "left": "LEFT_SRT_PUBLISH_PASSPHRASE",
+        "right": "RIGHT_SRT_PUBLISH_PASSPHRASE",
+        "cabin": "CABIN_SRT_PUBLISH_PASSPHRASE",
+    }
+    # Each role's variable name must be unique — never share a passphrase
+    # across two camera paths.
+    assert len(set(PASSPHRASE_VAR_BY_ROLE.values())) == 4
+
+
+@pytest.mark.parametrize("role", ["front", "left", "right", "cabin"])
+def test_build_publish_uri_uses_role_as_srt_path(role):
+    uri = build_publish_uri(
+        host="203.0.113.10",
+        port="8890",
+        path=role,
+        publisher_username="pubuser",
+        publisher_password="pubpass",
+        passphrase="rolepass",
+        pbkeylen=32,
+        pkt_size=1316,
+    )
+    assert f"streamid=publish:{role}:pubuser:pubpass" in uri
+
+
+@pytest.mark.parametrize("role", ["front", "left", "right", "cabin"])
+def test_camera_publisher_status_file_named_by_role(tmp_path, role):
+    publisher = CameraPublisher(role=role, repo_root=tmp_path)
+    publisher._write_status(healthy=True, fps=20.0)
+
+    status_file = tmp_path / "runs" / f"{role}_status.json"
+    assert status_file.exists()
+    data = json.loads(status_file.read_text())
+    assert data["stream_path"] == role
+
+
+@pytest.mark.parametrize("role", ["front", "left", "right", "cabin"])
+def test_camera_publisher_selects_correct_passphrase_variable_per_role(monkeypatch, tmp_path, role):
+    cameras_config = tmp_path / "config"
+    cameras_config.mkdir()
+    (cameras_config / "cameras.yaml").write_text(
+        "\n".join(f"{r}:\n  usb_path: usb-test-{r}" for r in PASSPHRASE_VAR_BY_ROLE)
+    )
+    (cameras_config / "video.yaml").write_text(
+        "\n".join(
+            [
+                "capture: {width: 800, height: 600, framerate: 20}",
+                "encoder: {bitrate: 4000000, idr_interval_frames: 20, "
+                "iframe_interval_frames: 20, insert_sps_pps: true, poc_type: 2}",
+                "h264parse: {config_interval: -1, stream_format: byte-stream, alignment: au}",
+                "mpegts: {alignment: 7, pat_interval_ticks: 9000, pmt_interval_ticks: 9000}",
+                "srt: {pkt_size: 1316, pbkeylen: 32}",
+            ]
+        )
+    )
+
+    # Entirely synthetic, non-secret test fixture values — never read from or
+    # written to the real secret file. Monkeypatching the function itself
+    # (not a module-level path constant) guarantees this, since a function's
+    # default-argument value is bound once at definition time and would NOT
+    # be affected by reassigning a module attribute after the fact.
+    fake_secrets = {
+        "OCI_VISUALIZATION_HOST": "203.0.113.10",
+        "SRT_PORT": "8890",
+        "MEDIA_PUBLISHER_USERNAME": "pubuser",
+        "MEDIA_PUBLISHER_PASSWORD": "pubpass",
+        "FRONT_SRT_PUBLISH_PASSPHRASE": "frontpass",
+        "LEFT_SRT_PUBLISH_PASSPHRASE": "leftpass",
+        "RIGHT_SRT_PUBLISH_PASSPHRASE": "rightpass",
+        "CABIN_SRT_PUBLISH_PASSPHRASE": "cabinpass",
+    }
+    import video.publisher as publisher_module
+
+    monkeypatch.setattr(publisher_module, "load_jetson_secrets", lambda: fake_secrets)
+
+    publisher = CameraPublisher(role=role, repo_root=tmp_path)
+    publisher._resolve_camera = lambda: type(
+        "R", (), {"image_node": f"/dev/video_{role}"}
+    )()
+
+    argv, image_node, _video_config = publisher._build_argv()
+
+    expected_passphrase = {
+        "front": "frontpass",
+        "left": "leftpass",
+        "right": "rightpass",
+        "cabin": "cabinpass",
+    }[role]
+    uri_arg = next(arg for arg in argv if arg.startswith("uri="))
+    assert f"streamid=publish:{role}:pubuser:pubpass" in uri_arg
+    assert f"passphrase={expected_passphrase}" in uri_arg
+    assert image_node == f"/dev/video_{role}"
+
+
+def test_locked_encoder_settings_identical_across_all_four_roles(tmp_path):
+    """The FRONT encoder/mux configuration is locked; every role must produce
+    byte-identical encoder/parser/mux settings — only the image node and SRT
+    path/passphrase may differ."""
+    from video.pipeline import build_gst_launch_args
+    from video.publisher import load_video_config
+
+    video_config = load_video_config(
+        Path("/home/mila/teleop_visualization_jetson/config/video.yaml")
+    )
+
+    def encoder_mux_settings(argv):
+        # Strip v4l2src device and srtsink uri — everything else must match.
+        return [
+            arg
+            for arg in argv
+            if not arg.startswith("device=") and not arg.startswith("uri=")
+        ]
+
+    reference = encoder_mux_settings(
+        build_gst_launch_args("/dev/video0", video_config, "srt://host/front")
+    )
+    for role, node in [("left", "/dev/video1"), ("right", "/dev/video2"), ("cabin", "/dev/video3")]:
+        other = encoder_mux_settings(
+            build_gst_launch_args(node, video_config, f"srt://host/{role}")
+        )
+        assert other == reference, f"encoder/mux settings diverged for role={role}"

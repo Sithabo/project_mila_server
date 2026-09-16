@@ -147,7 +147,7 @@ class PublisherState:
     started_at: float = field(default_factory=time.time)
 
 
-class FrontPublisher:
+class CameraPublisher:
     def __init__(self, role: str, repo_root: Path = REPO_ROOT):
         self.role = role
         self.repo_root = repo_root
@@ -315,7 +315,7 @@ def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    publisher = FrontPublisher(role=args.role)
+    publisher = CameraPublisher(role=args.role)
     publisher.run_forever()
 
 

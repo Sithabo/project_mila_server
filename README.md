@@ -42,15 +42,20 @@ control.
 
 ## Status
 
-- **FRONT camera WAN video publisher**: implemented and validated end-to-end against
-  the real OCI relay (real hardware H.264 via `nvv4l2h264enc`, real SRT publication,
-  187.8s and 365.1s stable test runs, zero reconnects, zero errors). See
-  `docs/WAN_PUBLISHER.md`.
+- **Four-camera WAN video publishers (FRONT/LEFT/RIGHT/CABIN)**: implemented and
+  validated end-to-end against the real OCI relay — one shared implementation
+  (`video/publisher.py:CameraPublisher`) parameterized by role, real hardware H.264
+  via `nvv4l2h264enc` with the locked `poc-type=2` configuration, real SRT
+  publication to all four MediaMTX paths. Staged validation (FRONT → +LEFT →
+  +RIGHT → +CABIN) passed, followed by all four running simultaneously for
+  ~50 minutes with zero encoder errors and exactly one isolated, self-recovered
+  USB blip (single reconnect, no repeats). See `docs/WAN_PUBLISHER.md`.
 - **Telemetry WebSocket publisher**: implemented and validated end-to-end against the
-  real OCI relay (real GNSS/Xsens data, ~10 Hz, authenticated, zero relay errors,
-  zero reconnects over a 5-minute concurrent run). See `docs/WAN_PUBLISHER.md`.
-- **LEFT / RIGHT / CABIN WAN video**: not yet implemented (FRONT-only in this phase,
-  by design).
+  real OCI relay — real GNSS/Xsens data, ~10 Hz, authenticated, `cameras.front`/
+  `left`/`right`/`cabin`/`system` all live simultaneously, zero relay errors. Includes
+  a kernel-level TCP keepalive fix (Level 3B1-B4) for a diagnosed real defect where a
+  network interface change could silently orphan the connection for 15+ minutes.
+  See `docs/WAN_PUBLISHER.md`.
 - Hardware baseline, camera topology, ROS2 sensor interface, and encoder validation
   are documented in `docs/`.
 

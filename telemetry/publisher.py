@@ -82,19 +82,28 @@ TCP_KEEPALIVE_IDLE_SECONDS = 5
 TCP_KEEPALIVE_INTERVAL_SECONDS = 3
 TCP_KEEPALIVE_PROBES = 3
 
-# Written by video/publisher.py (see STATUS_DIR there). A missing or stale
-# file means "unknown" — the cameras.front block is omitted rather than
-# fabricated. time.monotonic() is CLOCK_MONOTONIC on Linux, which is a
-# system-wide (not per-process) clock, so comparing a timestamp written by
-# the video publisher process against time.monotonic() read here is valid.
-FRONT_STATUS_FILE = REPO_ROOT / "runs" / "front_status.json"
-FRONT_STATUS_STALE_AFTER_SECONDS = 3.0
+# Written by video/publisher.py (see STATUS_DIR_NAME there) — one file per
+# camera role. A missing or stale file means "unknown" for that role — its
+# cameras.<role> block is omitted rather than fabricated. time.monotonic() is
+# CLOCK_MONOTONIC on Linux, a system-wide (not per-process) clock, so
+# comparing a timestamp written by a video publisher process against
+# time.monotonic() read here is valid.
+CAMERA_ROLES = ["front", "left", "right", "cabin"]
+STATUS_DIR = REPO_ROOT / "runs"
+CAMERA_STATUS_STALE_AFTER_SECONDS = 3.0
+# Backward-compatible alias (Level 3B1-B4 and earlier only ever had FRONT).
+FRONT_STATUS_FILE = STATUS_DIR / "front_status.json"
+FRONT_STATUS_STALE_AFTER_SECONDS = CAMERA_STATUS_STALE_AFTER_SECONDS
 
 THERMAL_ZONE_PATH = Path("/sys/class/thermal/thermal_zone0/temp")
 SEND_RATE_WINDOW_SIZE = 20  # samples used to compute the measured send rate
 
 
-def read_front_camera_status(status_file: Path = FRONT_STATUS_FILE) -> dict | None:
+def read_camera_status(role: str, status_file: Path | None = None) -> dict | None:
+    """Read one camera role's status file. Returns None (never fabricated
+    data) if the file is missing, malformed, or stale."""
+    if status_file is None:
+        status_file = STATUS_DIR / f"{role}_status.json"
     try:
         with open(status_file, "r", encoding="utf-8") as handle:
             data = json.load(handle)
@@ -104,14 +113,31 @@ def read_front_camera_status(status_file: Path = FRONT_STATUS_FILE) -> dict | No
     if not isinstance(updated_at, (int, float)):
         return None
     age_s = time.monotonic() - updated_at
-    if age_s > FRONT_STATUS_STALE_AFTER_SECONDS or age_s < 0:
+    if age_s > CAMERA_STATUS_STALE_AFTER_SECONDS or age_s < 0:
         return None
     return build_camera_health_block(
-        stream_path=data.get("stream_path", "front"),
+        stream_path=data.get("stream_path", role),
         healthy=bool(data.get("healthy", False)),
         fps=data.get("fps"),
         last_frame_age_s=round(age_s, 3),
     )
+
+
+def read_front_camera_status(status_file: Path = FRONT_STATUS_FILE) -> dict | None:
+    """Retained for backward compatibility; equivalent to
+    read_camera_status("front", status_file)."""
+    return read_camera_status("front", status_file)
+
+
+def read_all_camera_statuses() -> dict[str, dict]:
+    """Read every camera role's status file. Only includes roles with a
+    fresh, valid status — never fabricates an entry for a role with no data."""
+    statuses = {}
+    for role in CAMERA_ROLES:
+        status = read_camera_status(role)
+        if status is not None:
+            statuses[role] = status
+    return statuses
 
 
 def read_system_uptime_s() -> float | None:
@@ -239,10 +265,8 @@ class TelemetryPublisher:
         )
 
     def _build_cameras_block(self) -> dict | None:
-        front_status = read_front_camera_status()
-        if front_status is None:
-            return None
-        return {"front": front_status}
+        statuses = read_all_camera_statuses()
+        return statuses if statuses else None
 
     def _build_message(self) -> dict:
         self._sequence += 1

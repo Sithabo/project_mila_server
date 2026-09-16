@@ -1,18 +1,19 @@
-# WAN Publisher (FRONT video + telemetry)
+# WAN Publisher (four-camera video + telemetry)
 
-This document covers the Level 3B1-B implementation: the FRONT camera's WAN video
-publisher and the ROS2-to-WebSocket telemetry publisher. LEFT/RIGHT/CABIN WAN
-publication is not implemented yet (FRONT-only, by design, for this phase).
+This document covers the WAN video publishers for all four camera roles — `front`,
+`left`, `right`, `cabin` — and the ROS2-to-WebSocket telemetry publisher. All four
+cameras share one implementation (`video/publisher.py:CameraPublisher`); only the
+role/USB-path/SRT-path/passphrase selection differs between them (Level 3B2-A).
 
 ## Architecture
 
 ```
-Jetson cameras + GNSS/Xsens
+Jetson cameras (front/left/right/cabin) + GNSS/Xsens
         |
         v
      Jetson
         |
-        |  SRT video (FRONT only, this phase) + WebSocket telemetry
+        |  4x SRT video (one per camera role) + WebSocket telemetry
         v
        OCI
         |
@@ -214,22 +215,45 @@ handoff doc" below.
 ```bash
 cd /home/mila/teleop_visualization_jetson
 
-# FRONT video only (this phase):
+# FRONT video (own script, unchanged since Level 3B1-B):
 ./scripts/run_front_wan.sh
 
-# Telemetry:
+# LEFT / RIGHT / CABIN video (shared generic script, Level 3B2-A):
+./scripts/run_camera_wan.sh left
+./scripts/run_camera_wan.sh right
+./scripts/run_camera_wan.sh cabin
+
+# Telemetry (one process serves all active cameras' status):
 ./scripts/run_telemetry.sh
 ```
 
-Both scripts activate `.venv`, source `/opt/ros/jazzy/setup.bash`, and never use
+Each camera runs as its own independent OS process — `CameraPublisher` in
+`video/publisher.py`, parameterized only by `--role`. A failure in one camera's
+process (crash, reconnect loop, USB blip) never affects the others; each has its
+own supervisor loop, backoff state, and status file. All four use the exact same
+locked encoder/mux/SRT configuration — only the resolved USB path, the MediaMTX
+SRT path, and the per-role passphrase variable differ.
+
+All scripts activate `.venv`, source `/opt/ros/jazzy/setup.bash`, and never use
 `set -x` (constructing an SRT URI under shell tracing would print it).
+
+**Restart telemetry after changing telemetry code.** The telemetry publisher does
+not hot-reload — if `telemetry/publisher.py` or `telemetry/schema.py` changes
+while a telemetry process is already running, that process keeps executing the
+code it loaded at startup. Restart it to pick up changes (this was observed
+directly during Level 3B2-A: a telemetry process still running from before the
+multi-camera change kept reporting only `cameras.front` until restarted).
 
 ## Shutdown
 
-Send `SIGINT` (Ctrl-C) or `SIGTERM`. Each publisher's supervisor loop catches the
-signal, terminates its own child process (the `gst-launch-1.0` pipeline, or the
-WebSocket connection) cleanly, and exits — it does not affect the other publisher,
-ROS2 sensor nodes, or vehicle control.
+Send `SIGINT` (Ctrl-C) or `SIGTERM` to the specific process you want to stop.
+Each publisher's supervisor loop catches the signal, terminates its own child
+process (the `gst-launch-1.0` pipeline, or the WebSocket connection) cleanly, and
+exits — it does not affect any other camera's publisher, telemetry, ROS2 sensor
+nodes, or vehicle control. There must be exactly one telemetry publisher process
+at a time (the relay rejects a second concurrent publisher connection with close
+code 1008); check `pgrep -f telemetry.publisher` (safe — telemetry's argv
+contains no secrets) before starting a new one.
 
 ## Diagnostics
 
@@ -238,7 +262,13 @@ ROS2 sensor nodes, or vehicle control.
 - `PublisherState`/`TelemetryPublisherState` track `connection_state`,
   `reconnect_count`, and `last_successful_publish_ts` without exposing secrets.
 - See the "Known limitation" above regarding `ps`/`/proc/<pid>/cmdline` argv
-  visibility for the video publisher's `gst-launch-1.0` child process.
+  visibility for a video publisher's `gst-launch-1.0` child process — this
+  applies to all four camera roles equally, not just FRONT. Use
+  `ps -o pid,pcpu,pmem -C gst-launch-1.0` (no `cmd`/`args` column) or check the
+  role-specific log file instead of a full-argv process listing.
+- Status files: `runs/<role>_status.json` (gitignored), one per active camera,
+  written once per second by that role's `CameraPublisher` and read by the
+  telemetry publisher to populate `cameras.<role>`.
 
 ## Reconnect behavior
 
