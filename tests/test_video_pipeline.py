@@ -15,6 +15,7 @@ def make_video_config(**overrides) -> VideoConfig:
         idr_interval_frames=20,
         iframe_interval_frames=20,
         insert_sps_pps=True,
+        poc_type=2,
         h264parse_config_interval=-1,
         h264_stream_format="byte-stream",
         h264_alignment="au",
@@ -58,6 +59,35 @@ def test_idr_and_sps_pps_repetition_still_configured():
     assert "iframeinterval=20" in argv
     assert "insert-sps-pps=true" in argv
     assert "config-interval=-1" in argv
+
+
+def test_poc_type_2_configured_on_encoder():
+    # Level 3B1-B3: the one property changed to fix MediaMTX's "too many
+    # reordered frames" (its DTSExtractor bypasses POC/DTS reconstruction
+    # when pic_order_cnt_type=2).
+    argv = build_gst_launch_args("/dev/video2", make_video_config(), "srt://host:1/")
+    assert "poc-type=2" in argv
+    # It belongs to the nvv4l2h264enc element, between insert-sps-pps and the
+    # next "!" separator.
+    enc_idx = argv.index("nvv4l2h264enc")
+    next_pipe_idx = argv.index("!", enc_idx)
+    assert "poc-type=2" in argv[enc_idx:next_pipe_idx]
+
+
+def test_all_3b1b2_mux_parser_settings_still_present_alongside_poc_type():
+    argv = build_gst_launch_args("/dev/video2", make_video_config(), "srt://host:1/")
+    for expected in (
+        "poc-type=2",
+        "idrinterval=20",
+        "iframeinterval=20",
+        "insert-sps-pps=true",
+        "config-interval=-1",
+        "video/x-h264,stream-format=byte-stream,alignment=au",
+        "alignment=7",
+        "pat-interval=9000",
+        "pmt-interval=9000",
+    ):
+        assert expected in argv, f"missing previously-validated setting: {expected}"
 
 
 def test_local_ts_test_pipeline_uses_identical_encode_chain_as_wan_pipeline():

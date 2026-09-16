@@ -18,6 +18,14 @@ encoder:
   idr_interval_frames: 20
   iframe_interval_frames: 20
   insert_sps_pps: true
+  # Level 3B1-B3: MediaMTX/mediacommon's H.264 DTSExtractor closed readers
+  # with "too many reordered frames" while deriving DTS from picture-order-
+  # count (POC), even though no B-frames/PTS/DTS regressions were observed
+  # client-side. poc-type=2 (confirmed present via `gst-inspect-1.0
+  # nvv4l2h264enc`, range 0-2, default 0) makes coding/decoding order equal
+  # to display order, letting the extractor bypass POC/DTS reconstruction.
+  # This is the ONE property changed for this fix.
+  poc_type: 2
 
 h264parse:
   # -1 = send SPS/PPS with every IDR frame. Confirmed supported via

@@ -116,6 +116,7 @@ def load_video_config(config_path: Path) -> VideoConfig:
         idr_interval_frames=encoder["idr_interval_frames"],
         iframe_interval_frames=encoder["iframe_interval_frames"],
         insert_sps_pps=encoder["insert_sps_pps"],
+        poc_type=encoder["poc_type"],
         h264parse_config_interval=h264parse_cfg["config_interval"],
         h264_stream_format=h264parse_cfg["stream_format"],
         h264_alignment=h264parse_cfg["alignment"],

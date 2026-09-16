@@ -19,6 +19,16 @@ configuring them explicitly.
    `pkt_size=1316` contract exactly. Leaving this at auto meant mpegtsmux was
    not producing buffers aligned to the transport's packet size, which is
    consistent with a receiver losing PES/TS packet sync.
+
+Level 3B1-B3 fix: after the above, MediaMTX still closed readers with
+"too many reordered frames" — emitted by mediacommon's H.264 DTSExtractor
+while deriving DTS from picture-order-count (POC), not an SRT/network issue.
+`nvv4l2h264enc`'s `poc-type=2` (confirmed present via gst-inspect-1.0, range
+0-2, default 0) makes coding/decoding order equal to display order, which
+lets the extractor bypass POC/DTS reconstruction entirely. This is the one
+and only property changed for this fix — everything else (resolution, FPS,
+IDR/SPS-PPS cadence, mux alignment, PAT/PMT interval, SRT contract) is
+unchanged from the 3B1-B2 validated configuration.
 """
 from __future__ import annotations
 
@@ -34,6 +44,7 @@ class VideoConfig:
     idr_interval_frames: int
     iframe_interval_frames: int
     insert_sps_pps: bool
+    poc_type: int
     h264parse_config_interval: int
     h264_stream_format: str
     h264_alignment: str
@@ -71,6 +82,7 @@ def _build_common_encode_args(image_node: str, video_config: VideoConfig) -> lis
         f"idrinterval={video_config.idr_interval_frames}",
         f"iframeinterval={video_config.iframe_interval_frames}",
         f"insert-sps-pps={insert_sps_pps_value}",
+        f"poc-type={video_config.poc_type}",
         "!",
         "h264parse",
         f"config-interval={video_config.h264parse_config_interval}",
