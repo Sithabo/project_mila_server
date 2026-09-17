@@ -258,3 +258,67 @@ def test_locked_encoder_settings_identical_across_all_four_roles(tmp_path):
             build_gst_launch_args(node, video_config, f"srt://host/{role}")
         )
         assert other == reference, f"encoder/mux settings diverged for role={role}"
+
+
+# --- Level 3C1-A: minimal mode config selection ----------------------------
+
+
+def test_camera_publisher_defaults_to_full_mode_config():
+    """Backward compatibility: constructing a CameraPublisher without
+    specifying video_config_filename must keep using the locked full-mode
+    config, exactly as before minimal mode existed."""
+    publisher = CameraPublisher(role="cabin")
+    assert publisher.video_config_filename == "video.yaml"
+
+
+def test_camera_publisher_can_select_minimal_config():
+    publisher = CameraPublisher(role="cabin", video_config_filename="video_minimal.yaml")
+    assert publisher.video_config_filename == "video_minimal.yaml"
+
+
+def test_cabin_minimal_publisher_uses_minimal_settings_and_stable_resolver(monkeypatch, tmp_path):
+    """End-to-end (within _build_argv): minimal-mode CABIN publisher resolves
+    via the same stable USB-topology resolver as full mode, and produces a
+    pipeline using the minimal (640x480/10fps/800kbps) settings, not the
+    locked full-mode settings."""
+    cameras_config = tmp_path / "config"
+    cameras_config.mkdir()
+    (cameras_config / "cameras.yaml").write_text("cabin:\n  usb_path: usb-test-cabin\n")
+    (cameras_config / "video_minimal.yaml").write_text(
+        "\n".join(
+            [
+                "capture: {width: 640, height: 480, framerate: 10}",
+                "encoder: {bitrate: 800000, idr_interval_frames: 10, "
+                "iframe_interval_frames: 10, insert_sps_pps: true, poc_type: 2}",
+                "h264parse: {config_interval: -1, stream_format: byte-stream, alignment: au}",
+                "mpegts: {alignment: 7, pat_interval_ticks: 9000, pmt_interval_ticks: 9000}",
+                "srt: {pkt_size: 1316, pbkeylen: 32}",
+            ]
+        )
+    )
+    fake_secrets = {
+        "OCI_VISUALIZATION_HOST": "203.0.113.10",
+        "SRT_PORT": "8890",
+        "MEDIA_PUBLISHER_USERNAME": "pubuser",
+        "MEDIA_PUBLISHER_PASSWORD": "pubpass",
+        "CABIN_SRT_PUBLISH_PASSPHRASE": "cabinpass",
+    }
+    import video.publisher as publisher_module
+
+    monkeypatch.setattr(publisher_module, "load_jetson_secrets", lambda: fake_secrets)
+
+    publisher = CameraPublisher(
+        role="cabin", repo_root=tmp_path, video_config_filename="video_minimal.yaml"
+    )
+    publisher._resolve_camera = lambda: type("R", (), {"image_node": "/dev/video_cabin"})()
+
+    argv, image_node, video_config = publisher._build_argv()
+
+    assert video_config.width == 640
+    assert video_config.height == 480
+    assert video_config.framerate == 10
+    assert video_config.bitrate == 800000
+    assert "streamid=publish:cabin:pubuser:pubpass" in next(
+        arg for arg in argv if arg.startswith("uri=")
+    )
+    assert image_node == "/dev/video_cabin"

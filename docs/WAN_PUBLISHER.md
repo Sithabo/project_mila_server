@@ -368,6 +368,41 @@ frames over 610 seconds, ~20 FPS decoded/wall-clock, 0 reordered-frame errors,
 modify this configuration without a documented reason and a fresh validation
 pass.
 
+## Minimal mode (Level 3C1-A)
+
+Field testing over ATT WiFi and Starlink showed the full four-camera mode
+(800x600@20fps/4Mbps per camera, ~16-18Mbps aggregate) is not reliable enough on
+the available mobile uplink. **Minimal mode** is a separate, coexisting operating
+mode — CABIN video only + GNSS-only telemetry — for use when uplink is
+constrained (~5Mbps or lower). It does not replace or modify full mode; both
+share the same underlying code (`CameraPublisher`, `TelemetryPublisher`,
+resolver, reconnect logic), selected via config file / constructor flags.
+
+**Video:** 640x480@10fps (a directly-supported discrete CABIN capture mode — no
+rate-limiting stage needed), 800kbps, 1-second keyframe interval
+(`idrinterval=10`/`iframeinterval=10` — not the full-mode value of 20, which
+would be a 2-second GOP at this frame rate). Same stability settings as full
+mode: `poc-type=2`, `insert-sps-pps=true`, `h264parse config-interval=-1`,
+explicit H.264 caps, `mpegtsmux alignment=7`. Config: `config/video_minimal.yaml`
+(full mode's `config/video.yaml` is untouched).
+
+**Telemetry:** ~5Hz (vs. full mode's ~10Hz), GNSS only — no `cameras`, no
+`system`, and IMU/Xsens heading is never consulted (even when available) so
+`heading_source` is only ever `GNSS_COURSE` or `UNAVAILABLE`, never `IMU`. Same
+`schema_version=1`/`message_type="vehicle_visualization"` contract, same
+existing GNSS field names/units (`horizontal_speed_mps` stays in m/s — no
+duplicate `speed_mph` field).
+
+**Startup:** `./scripts/run_minimal_visualization.sh` (refuses to start if any
+full-mode publisher, or another telemetry publisher, is already running — it
+never kills an unrelated process to make room). **Stop:**
+`./scripts/stop_minimal_visualization.sh` (targets only the CABIN and
+minimal-mode telemetry processes).
+
+**Validated:** ~22-minute continuous run, zero CABIN/telemetry errors or
+reconnects, ~1.08-1.19 Mbps average/peak outbound throughput (target: near
+1Mbps, comfortably under 2Mbps) — well within margin for a constrained uplink.
+
 ## Control separation (non-negotiable)
 
 This implementation never uses UDP port 4210, never imports or invokes G29/ESP32

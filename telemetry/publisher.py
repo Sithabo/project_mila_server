@@ -69,7 +69,8 @@ JETSON_REQUIRED_VARS = ["OCI_VISUALIZATION_HOST", "TELEMETRY_PORT", "TELEMETRY_P
 
 BACKOFF_BASE_SECONDS = 1.0
 BACKOFF_CAP_SECONDS = 30.0
-PUBLISH_INTERVAL_SECONDS = 0.1  # ~10 Hz target
+PUBLISH_INTERVAL_SECONDS = 0.1  # ~10 Hz target (full mode)
+MINIMAL_PUBLISH_INTERVAL_SECONDS = 0.2  # ~5 Hz target (Level 3C1-A minimal mode)
 
 # Kernel-level TCP keepalive tuning (see module docstring: Level 3B1-B4 fix).
 # Detects an unreachable peer (e.g. the local network interface/IP changed
@@ -230,8 +231,25 @@ class TelemetryPublisherState:
 
 
 class TelemetryPublisher:
-    def __init__(self, node: TelemetrySourceNode):
+    def __init__(
+        self,
+        node: TelemetrySourceNode,
+        publish_interval_s: float = PUBLISH_INTERVAL_SECONDS,
+        include_cameras: bool = True,
+        include_system: bool = True,
+        include_imu_heading: bool = True,
+    ):
         self.node = node
+        # Level 3C1-A: minimal mode (GNSS-only, ~5 Hz, no cameras/system/IMU
+        # in the outgoing message) reuses this exact class — same connection,
+        # auth, TCP-keepalive, and reconnect/backoff logic as full mode. Only
+        # these four knobs differ; the ROS2 subscriptions themselves
+        # (including Xsens) are unchanged and still run locally regardless —
+        # only what gets forwarded over WAN is restricted.
+        self.publish_interval_s = publish_interval_s
+        self.include_cameras = include_cameras
+        self.include_system = include_system
+        self.include_imu_heading = include_imu_heading
         self.state = TelemetryPublisherState()
         self._sequence = 0
         self._shutdown_requested = False
@@ -272,14 +290,16 @@ class TelemetryPublisher:
         self._sequence += 1
         self._send_timestamps.append(time.monotonic())
         gnss = self.node.get_latest_gnss_sample()
-        xsens_heading_deg = self.node.get_latest_xsens_heading_deg()
+        xsens_heading_deg = (
+            self.node.get_latest_xsens_heading_deg() if self.include_imu_heading else None
+        )
         return build_telemetry_message(
             sequence=self._sequence,
             timestamp_utc=_now_iso_utc(),
             timestamp_monotonic_s=time.monotonic(),
             gnss=gnss,
-            cameras=self._build_cameras_block(),
-            system_info=self._build_system_block(),
+            cameras=self._build_cameras_block() if self.include_cameras else None,
+            system_info=self._build_system_block() if self.include_system else None,
             xsens_heading_deg=xsens_heading_deg,
         )
 
@@ -325,7 +345,7 @@ class TelemetryPublisher:
                     # (json.dumps(...) there produces a str -> TEXT frame).
                     await websocket.send(payload.decode("utf-8"))
                     self.state.last_successful_publish_ts = time.time()
-                    await asyncio.sleep(PUBLISH_INTERVAL_SECONDS)
+                    await asyncio.sleep(self.publish_interval_s)
             finally:
                 error_watcher.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
@@ -361,6 +381,13 @@ class TelemetryPublisher:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="WAN telemetry publisher")
+    parser.add_argument(
+        "--mode",
+        choices=["full", "minimal"],
+        default="full",
+        help="full (default): ~10Hz, gnss+cameras+system+IMU heading. "
+        "minimal (Level 3C1-A): ~5Hz, GNSS only, no cameras/system/IMU.",
+    )
     parser.add_argument("--log-level", default="INFO")
     args = parser.parse_args()
 
@@ -374,7 +401,17 @@ def main() -> None:
     spin_thread = threading.Thread(target=rclpy.spin, args=(node,), daemon=True)
     spin_thread.start()
 
-    publisher = TelemetryPublisher(node)
+    if args.mode == "minimal":
+        publisher = TelemetryPublisher(
+            node,
+            publish_interval_s=MINIMAL_PUBLISH_INTERVAL_SECONDS,
+            include_cameras=False,
+            include_system=False,
+            include_imu_heading=False,
+        )
+    else:
+        publisher = TelemetryPublisher(node)
+    logger.info("telemetry publisher starting mode=%s", args.mode)
     signal.signal(signal.SIGINT, publisher.request_shutdown)
     signal.signal(signal.SIGTERM, publisher.request_shutdown)
 

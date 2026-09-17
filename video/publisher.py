@@ -148,9 +148,14 @@ class PublisherState:
 
 
 class CameraPublisher:
-    def __init__(self, role: str, repo_root: Path = REPO_ROOT):
+    def __init__(self, role: str, repo_root: Path = REPO_ROOT, video_config_filename: str = "video.yaml"):
         self.role = role
         self.repo_root = repo_root
+        # Level 3C1-A: minimal mode uses config/video_minimal.yaml (640x480@10fps,
+        # 800kbps) instead of the locked config/video.yaml (800x600@20fps,
+        # 4Mbps) used by full mode. Same pipeline builder, same resolver, same
+        # reconnect logic — only which settings file is loaded differs.
+        self.video_config_filename = video_config_filename
         self.state = PublisherState()
         self._shutdown_requested = False
         self._child: subprocess.Popen | None = None
@@ -163,7 +168,7 @@ class CameraPublisher:
 
     def _build_argv(self) -> tuple[list[str], str, VideoConfig]:
         image_node = self._resolve_camera().image_node
-        video_config = load_video_config(self.repo_root / "config" / "video.yaml")
+        video_config = load_video_config(self.repo_root / "config" / self.video_config_filename)
         secrets = load_jetson_secrets()
         passphrase_var = PASSPHRASE_VAR_BY_ROLE[self.role]
         srt_uri = build_publish_uri(
@@ -307,6 +312,12 @@ class CameraPublisher:
 def main() -> None:
     parser = argparse.ArgumentParser(description="WAN video publisher for one camera role")
     parser.add_argument("--role", required=True, choices=["front", "left", "right", "cabin"])
+    parser.add_argument(
+        "--video-config",
+        default="video.yaml",
+        help="config/ filename to load video settings from (default: video.yaml, "
+        "the locked full-mode settings). Minimal mode uses video_minimal.yaml.",
+    )
     parser.add_argument("--log-level", default="INFO")
     args = parser.parse_args()
 
@@ -315,7 +326,7 @@ def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    publisher = CameraPublisher(role=args.role)
+    publisher = CameraPublisher(role=args.role, video_config_filename=args.video_config)
     publisher.run_forever()
 
 

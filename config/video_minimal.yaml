@@ -1,0 +1,45 @@
+# Level 3C1-A: MINIMAL robust WAN video settings — CABIN only, for use over
+# constrained/unreliable mobile Internet (ATT/Starlink field testing showed
+# the full four-camera 800x600@20fps/4Mbps-per-camera mode is not reliable
+# enough on the available uplink). This is a SEPARATE config from
+# config/video.yaml — full mode is unchanged and still uses that file.
+#
+# Same encoder/mux/parser stability settings as full mode (poc-type=2,
+# insert-sps-pps, explicit H.264 caps, mpegtsmux alignment=7, PAT/PMT
+# intervals) — only resolution/framerate/bitrate/keyframe-interval differ,
+# scaled down for robustness over a ~5 Mbps or lower uplink.
+
+capture:
+  # Confirmed via `v4l2-ctl --list-formats-ext` on the CABIN camera: 640x480
+  # MJPG @ 10.000 fps is a directly supported discrete mode — no rate-limiting
+  # GStreamer stage needed; this is the camera's native capture rate.
+  width: 640
+  height: 480
+  framerate: 10
+
+encoder:
+  # Target ~800 kbps nominal per Level 3C1-A section 5 (robustness over
+  # quality — do not raise this because the image looks soft).
+  bitrate: 800000
+  # ~1 second IDR spacing at 10 FPS (NOT the full-mode value of 20, which
+  # was correct for 20 FPS but would give a 2-second GOP here).
+  idr_interval_frames: 10
+  iframe_interval_frames: 10
+  insert_sps_pps: true
+  # Same Level 3B1-B3 fix as full mode — confirmed present on this installed
+  # nvv4l2h264enc (range 0-2, default 0).
+  poc_type: 2
+
+h264parse:
+  config_interval: -1
+  stream_format: byte-stream
+  alignment: au
+
+mpegts:
+  alignment: 7
+  pat_interval_ticks: 9000
+  pmt_interval_ticks: 9000
+
+srt:
+  pkt_size: 1316
+  pbkeylen: 32

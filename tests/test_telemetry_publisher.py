@@ -11,6 +11,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from telemetry.publisher import (  # noqa: E402
     CAMERA_ROLES,
+    MINIMAL_PUBLISH_INTERVAL_SECONDS,
+    PUBLISH_INTERVAL_SECONDS,
     TCP_KEEPALIVE_IDLE_SECONDS,
     TCP_KEEPALIVE_INTERVAL_SECONDS,
     TCP_KEEPALIVE_PROBES,
@@ -22,6 +24,7 @@ from telemetry.publisher import (  # noqa: E402
     read_camera_status,
     read_front_camera_status,
 )
+from telemetry.schema import HEADING_SOURCE_IMU, GnssSample  # noqa: E402
 
 
 class _FakeNode:
@@ -30,6 +33,30 @@ class _FakeNode:
 
     def get_latest_xsens_heading_deg(self):
         return None
+
+
+class _FakeNodeWithXsensAndGnss:
+    """A node that DOES have valid Xsens heading and a valid GNSS sample
+    available, used to prove minimal mode never forwards them regardless."""
+
+    def get_latest_gnss_sample(self):
+        return GnssSample(
+            timestamp_utc="2030-01-01T00:00:00.000Z",
+            latitude_deg=35.2,
+            longitude_deg=-97.4,
+            altitude_m=320.0,
+            vn_mps=1.0,
+            ve_mps=1.0,
+            vu_mps=0.0,
+            nr_sv=10,
+            h_accuracy_raw=200.0,
+            v_accuracy_raw=300.0,
+            cog_deg=float("nan"),  # invalid, so full mode WOULD fall back to IMU
+            fix_valid=True,
+        )
+
+    def get_latest_xsens_heading_deg(self):
+        return 42.0  # a real, available Xsens heading
 
 
 class _FakeWebSocket:
@@ -321,3 +348,78 @@ def test_build_cameras_block_supports_multiple_simultaneous_roles(monkeypatch, t
     for role in ["front", "left", "right", "cabin"]:
         assert message["cameras"][role]["stream_path"] == role
         assert message["cameras"][role]["healthy"] is True
+
+
+# --- Level 3C1-A: minimal mode telemetry -----------------------------------
+
+
+def _minimal_publisher(node) -> TelemetryPublisher:
+    return TelemetryPublisher(
+        node,
+        publish_interval_s=MINIMAL_PUBLISH_INTERVAL_SECONDS,
+        include_cameras=False,
+        include_system=False,
+        include_imu_heading=False,
+    )
+
+
+def test_minimal_rate_is_5hz_full_rate_is_10hz():
+    assert MINIMAL_PUBLISH_INTERVAL_SECONDS == pytest.approx(0.2)  # 5 Hz
+    assert PUBLISH_INTERVAL_SECONDS == pytest.approx(0.1)  # 10 Hz, unchanged
+    assert MINIMAL_PUBLISH_INTERVAL_SECONDS > PUBLISH_INTERVAL_SECONDS
+
+
+def test_minimal_publisher_uses_5hz_interval():
+    publisher = _minimal_publisher(_FakeNode())
+    assert publisher.publish_interval_s == pytest.approx(0.2)
+
+
+def test_minimal_message_includes_gnss():
+    publisher = _minimal_publisher(_FakeNodeWithXsensAndGnss())
+    message = publisher._build_message()
+    assert "gnss" in message
+    assert message["gnss"]["fix_valid"] is True
+    assert message["gnss"]["latitude_deg"] == 35.2
+    # Existing field name/unit preserved exactly, per Level 3C1-A section 6 —
+    # no duplicate speed_mph field, no renaming.
+    assert "horizontal_speed_mps" in message["gnss"]
+    assert message["gnss"]["satellite_count"] == 10
+    assert message["gnss"]["horizontal_accuracy_m"] == pytest.approx(2.0)
+
+
+def test_minimal_message_excludes_cameras():
+    publisher = _minimal_publisher(_FakeNode())
+    message = publisher._build_message()
+    assert "cameras" not in message
+
+
+def test_minimal_message_excludes_system():
+    publisher = _minimal_publisher(_FakeNode())
+    message = publisher._build_message()
+    assert "system" not in message
+
+
+def test_minimal_message_never_uses_imu_heading_even_when_available():
+    # The fake node has a real, valid Xsens heading (42.0) AND an invalid
+    # GNSS cog (NaN) — full mode would fall back to IMU here. Minimal mode
+    # must never do so, per Level 3C1-A: no IMU dependency.
+    publisher = _minimal_publisher(_FakeNodeWithXsensAndGnss())
+    message = publisher._build_message()
+    assert message["gnss"]["heading_source"] != HEADING_SOURCE_IMU
+    assert message["gnss"]["heading_deg"] is None
+
+
+def test_full_mode_still_uses_imu_heading_fallback_unchanged():
+    """Regression guard: full mode's existing IMU-fallback behavior must be
+    completely unaffected by the addition of minimal mode."""
+    publisher = TelemetryPublisher(_FakeNodeWithXsensAndGnss())  # default = full mode
+    message = publisher._build_message()
+    assert message["gnss"]["heading_source"] == HEADING_SOURCE_IMU
+    assert message["gnss"]["heading_deg"] == 42.0
+
+
+def test_minimal_message_still_has_schema_version_and_type():
+    publisher = _minimal_publisher(_FakeNode())
+    message = publisher._build_message()
+    assert message["schema_version"] == 1
+    assert message["message_type"] == "vehicle_visualization"
