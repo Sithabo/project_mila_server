@@ -322,3 +322,107 @@ def test_cabin_minimal_publisher_uses_minimal_settings_and_stable_resolver(monke
         arg for arg in argv if arg.startswith("uri=")
     )
     assert image_node == "/dev/video_cabin"
+
+
+# --- Level 3C2-A: two-camera mode camera-config selection -------------------
+
+
+def test_camera_publisher_defaults_to_full_mode_camera_config():
+    """Backward compatibility: constructing a CameraPublisher without
+    specifying camera_config_filename must keep resolving roles via the
+    locked full-mode config/cameras.yaml, exactly as before two-camera mode
+    existed."""
+    publisher = CameraPublisher(role="front")
+    assert publisher.camera_config_filename == "cameras.yaml"
+
+
+def test_camera_publisher_can_select_two_camera_config():
+    publisher = CameraPublisher(role="front", camera_config_filename="cameras_two_camera.yaml")
+    assert publisher.camera_config_filename == "cameras_two_camera.yaml"
+
+
+def test_two_camera_mode_logical_front_resolves_via_override_config(monkeypatch, tmp_path):
+    """End-to-end (within _resolve_camera): a CameraPublisher constructed with
+    role='front' and camera_config_filename='cameras_two_camera.yaml' must
+    read the USB path for 'front' from that override file, NOT from
+    config/cameras.yaml — proving the role-correction mapping (physically
+    verified front camera, previously mislabelled 'left', at usb-4.1.2.2) is
+    actually wired up, not just present as an unused config file."""
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    # Full-mode cameras.yaml deliberately maps front to a DIFFERENT usb_path,
+    # so this test fails loudly if _resolve_camera ever falls back to it.
+    (config_dir / "cameras.yaml").write_text(
+        "front:\n  usb_path: usb-2.4\ncabin:\n  usb_path: usb-4.2\n"
+    )
+    (config_dir / "cameras_two_camera.yaml").write_text(
+        "front:\n  usb_path: usb-4.1.2.2\ncabin:\n  usb_path: usb-4.2\n"
+    )
+
+    import video.publisher as publisher_module
+
+    captured_usb_paths = []
+
+    def fake_resolve_camera(role, usb_path):
+        captured_usb_paths.append(usb_path)
+        return type("R", (), {"role": role, "usb_path": usb_path, "image_node": "/dev/videoX"})()
+
+    monkeypatch.setattr(publisher_module, "resolve_camera", fake_resolve_camera)
+
+    publisher = CameraPublisher(
+        role="front", repo_root=tmp_path, camera_config_filename="cameras_two_camera.yaml"
+    )
+    resolved = publisher._resolve_camera()
+
+    assert captured_usb_paths == ["usb-4.1.2.2"]
+    assert resolved.usb_path == "usb-4.1.2.2"
+
+
+def test_two_camera_mode_front_still_publishes_to_oci_path_front(monkeypatch, tmp_path):
+    """The OCI SRT path and passphrase used are keyed on self.role ('front'),
+    not on the physical USB path — so even though the physical camera behind
+    logical FRONT changed identity, the operator still receives it as 'front'
+    and the existing FRONT_SRT_PUBLISH_PASSPHRASE secret still applies."""
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "cameras_two_camera.yaml").write_text(
+        "front:\n  usb_path: usb-4.1.2.2\ncabin:\n  usb_path: usb-4.2\n"
+    )
+    (config_dir / "video_minimal.yaml").write_text(
+        "\n".join(
+            [
+                "capture: {width: 640, height: 480, framerate: 10}",
+                "encoder: {bitrate: 800000, idr_interval_frames: 10, "
+                "iframe_interval_frames: 10, insert_sps_pps: true, poc_type: 2}",
+                "h264parse: {config_interval: -1, stream_format: byte-stream, alignment: au}",
+                "mpegts: {alignment: 7, pat_interval_ticks: 9000, pmt_interval_ticks: 9000}",
+                "srt: {pkt_size: 1316, pbkeylen: 32}",
+            ]
+        )
+    )
+    fake_secrets = {
+        "OCI_VISUALIZATION_HOST": "203.0.113.10",
+        "SRT_PORT": "8890",
+        "MEDIA_PUBLISHER_USERNAME": "pubuser",
+        "MEDIA_PUBLISHER_PASSWORD": "pubpass",
+        "FRONT_SRT_PUBLISH_PASSPHRASE": "frontpass",
+    }
+    import video.publisher as publisher_module
+
+    monkeypatch.setattr(publisher_module, "load_jetson_secrets", lambda: fake_secrets)
+
+    publisher = CameraPublisher(
+        role="front",
+        repo_root=tmp_path,
+        video_config_filename="video_minimal.yaml",
+        camera_config_filename="cameras_two_camera.yaml",
+    )
+    publisher._resolve_camera = lambda: type("R", (), {"image_node": "/dev/video_front_logical"})()
+
+    argv, image_node, video_config = publisher._build_argv()
+
+    uri_arg = next(arg for arg in argv if arg.startswith("uri="))
+    assert "streamid=publish:front:pubuser:pubpass" in uri_arg
+    assert "passphrase=frontpass" in uri_arg
+    assert video_config.width == 640
+    assert video_config.bitrate == 800000

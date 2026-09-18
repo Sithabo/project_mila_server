@@ -1,0 +1,25 @@
+# Level 3C2-A: two-camera low-bandwidth mode role -> USB bus-path mapping.
+#
+# THIS FILE CONTAINS A DELIBERATE LOGICAL-ROLE CORRECTION. It is NOT a copy
+# of config/cameras.yaml and must not be merged with it.
+#
+# Physical-camera correction (user-verified, authoritative, 2026-09-18):
+# the camera that config/cameras.yaml's full four-camera mapping labels
+# "left" (usb_path "usb-4.1.2.2") is physically the FRONT-facing camera.
+# config/cameras.yaml itself is NOT changed by this correction — the full
+# four-camera mode's role names/USB mappings are untouched and still use
+# config/cameras.yaml exactly as before. This file exists only so the new
+# two-camera mode can expose that same physical camera to the operator
+# under the correct logical name and OCI path, "front", instead of "left".
+#
+# usb_path values are read-only-verified against `v4l2-ctl --list-devices`
+# immediately before this file was created; the physical USB topology was
+# NOT moved or touched (see docs/CAMERA_TOPOLOGY.md for the general
+# stable-bus-path rationale, unchanged by this file).
+#
+# DO NOT MOVE THE VALIDATED CAMERA CABLING WITHOUT REVALIDATION.
+
+front:
+  usb_path: "usb-4.1.2.2"
+cabin:
+  usb_path: "usb-4.2"

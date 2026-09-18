@@ -148,7 +148,13 @@ class PublisherState:
 
 
 class CameraPublisher:
-    def __init__(self, role: str, repo_root: Path = REPO_ROOT, video_config_filename: str = "video.yaml"):
+    def __init__(
+        self,
+        role: str,
+        repo_root: Path = REPO_ROOT,
+        video_config_filename: str = "video.yaml",
+        camera_config_filename: str = "cameras.yaml",
+    ):
         self.role = role
         self.repo_root = repo_root
         # Level 3C1-A: minimal mode uses config/video_minimal.yaml (640x480@10fps,
@@ -156,12 +162,19 @@ class CameraPublisher:
         # 4Mbps) used by full mode. Same pipeline builder, same resolver, same
         # reconnect logic — only which settings file is loaded differs.
         self.video_config_filename = video_config_filename
+        # Level 3C2-A: two-camera mode uses config/cameras_two_camera.yaml,
+        # which maps logical role "front" to the physically-verified front
+        # camera's USB path (previously mislabelled "left" in cameras.yaml —
+        # see config/cameras_two_camera.yaml for the correction). Full mode's
+        # config/cameras.yaml is never modified or read differently; this is
+        # purely which mapping file a given publisher instance loads.
+        self.camera_config_filename = camera_config_filename
         self.state = PublisherState()
         self._shutdown_requested = False
         self._child: subprocess.Popen | None = None
 
     def _resolve_camera(self):
-        cameras_config = self.repo_root / "config" / "cameras.yaml"
+        cameras_config = self.repo_root / "config" / self.camera_config_filename
         roles = load_camera_config(cameras_config)
         usb_path = roles[self.role]
         return resolve_camera(self.role, usb_path)
@@ -316,7 +329,15 @@ def main() -> None:
         "--video-config",
         default="video.yaml",
         help="config/ filename to load video settings from (default: video.yaml, "
-        "the locked full-mode settings). Minimal mode uses video_minimal.yaml.",
+        "the locked full-mode settings). Minimal/two-camera modes use video_minimal.yaml.",
+    )
+    parser.add_argument(
+        "--camera-config",
+        default="cameras.yaml",
+        help="config/ filename to load the role->USB-path mapping from (default: "
+        "cameras.yaml, the locked full-mode mapping). Two-camera mode uses "
+        "cameras_two_camera.yaml, which overrides the physical camera behind "
+        "role 'front' (see that file's header comment).",
     )
     parser.add_argument("--log-level", default="INFO")
     args = parser.parse_args()
@@ -326,7 +347,11 @@ def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    publisher = CameraPublisher(role=args.role, video_config_filename=args.video_config)
+    publisher = CameraPublisher(
+        role=args.role,
+        video_config_filename=args.video_config,
+        camera_config_filename=args.camera_config,
+    )
     publisher.run_forever()
 
 

@@ -403,6 +403,61 @@ minimal-mode telemetry processes).
 reconnects, ~1.08-1.19 Mbps average/peak outbound throughput (target: near
 1Mbps, comfortably under 2Mbps) — well within margin for a constrained uplink.
 
+## Two-camera mode (Level 3C2-A)
+
+**Two-camera mode** extends one-camera minimal mode with a second video
+stream — logical FRONT + CABIN + GNSS-only telemetry — for uplinks that can
+sustain a bit more than the ~1Mbps one-camera minimal mode but still can't
+support the full four-camera mode. It coexists with, and does not modify,
+either full mode or one-camera minimal mode.
+
+**Role correction:** the user visually verified that the physical camera
+config/cameras.yaml's full four-camera mapping calls **"left"** (USB path
+`usb-4.1.2.2`) is actually the **front-facing** camera. `config/cameras.yaml`
+itself is unchanged — full four-camera mode still calls that same physical
+camera "left" at that same USB path. Two-camera mode instead loads a
+dedicated override mapping, `config/cameras_two_camera.yaml`:
+
+```yaml
+front:
+  usb_path: "usb-4.1.2.2"   # physically-verified front camera (was "left")
+cabin:
+  usb_path: "usb-4.2"       # same physical cabin camera as every other mode
+```
+
+`CameraPublisher` gained a `camera_config_filename` constructor/CLI parameter
+(mirroring the existing `video_config_filename` minimal-mode parameter,
+defaulting to `cameras.yaml` for full backward compatibility) — the role
+correction is purely a matter of which mapping file a given publisher
+instance loads; `video/camera_resolver.py`'s USB-topology resolution logic
+itself is unchanged. The OCI SRT path and passphrase are keyed on the
+publisher's logical `--role` (`front`), not on which physical camera is
+behind it, so the operator still receives this stream as `front` and the
+existing `FRONT_SRT_PUBLISH_PASSPHRASE` secret still applies unchanged.
+
+**Video:** both cameras use the same settings as one-camera minimal mode —
+640x480@10fps, 800kbps, `idrinterval=10`/`iframeinterval=10`, `poc-type=2`,
+`insert-sps-pps=true`, `h264parse config-interval=-1`, explicit H.264 caps,
+`mpegtsmux alignment=7`. Both load `config/video_minimal.yaml` — no new video
+settings file was needed. Nominal load: ~0.8Mbps each, ~1.6Mbps aggregate
+before SRT/mux overhead.
+
+**Telemetry:** reuses the existing one-camera minimal mode's GNSS-only ~5Hz
+telemetry (`--mode minimal`) completely unchanged — no cameras block, no
+system block, no IMU/Xsens. Adding a second camera does not change telemetry
+behavior in any way.
+
+**Startup:** `./scripts/run_two_camera_visualization.sh` — starts exactly two
+video publishers (logical front, cabin) plus one minimal telemetry publisher.
+Refuses to start (rather than killing anything) if any of front/left/right/
+cabin video publisher or any telemetry publisher is already running —
+"left" is checked because it is the *same physical camera* as this mode's
+logical front and cannot be opened twice. **Stop:**
+`./scripts/stop_two_camera_visualization.sh` (targets only this mode's front
+and cabin processes, distinguished from other modes' publishers by the
+`--camera-config cameras_two_camera.yaml` argument, plus the shared minimal
+telemetry process).
+
 ## Control separation (non-negotiable)
 
 This implementation never uses UDP port 4210, never imports or invokes G29/ESP32
