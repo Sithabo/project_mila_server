@@ -56,10 +56,12 @@ control.
   a kernel-level TCP keepalive fix (Level 3B1-B4) for a diagnosed real defect where a
   network interface change could silently orphan the connection for 15+ minutes.
   See `docs/WAN_PUBLISHER.md`.
-- Hardware baseline, camera topology, ROS2 sensor interface, and encoder validation
-  are documented in `docs/`.
+- Hardware baseline, camera topology, ROS2 sensor interface, encoder validation,
+  and overall backend architecture/latency optimization are documented in `docs/`
+  (see `docs/BACKEND_ARCHITECTURE.md`).
 
 ## Development environment
 
 See `docs/DEVELOPMENT_ENVIRONMENT.md` for how to set up and activate the project's
 Python environment alongside ROS2 Jazzy.
+
