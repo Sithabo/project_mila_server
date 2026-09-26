@@ -49,7 +49,7 @@ fi
 source .venv/bin/activate
 source /opt/ros/jazzy/setup.bash
 
-echo "[two-camera] starting logical FRONT video publisher (physical usb-4.1.2.2, 640x480@10fps, 800kbps)..."
+echo "[two-camera] starting logical FRONT video publisher (physical USB path per config/cameras_two_camera.yaml, 640x480@10fps, 800kbps)..."
 ./scripts/run_front_wan.sh --video-config video_minimal.yaml --camera-config cameras_two_camera.yaml &
 FRONT_PID=$!
 echo "[two-camera] FRONT publisher pid=$FRONT_PID"

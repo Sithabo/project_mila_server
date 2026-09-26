@@ -18,8 +18,19 @@
 # stable-bus-path rationale, unchanged by this file).
 #
 # DO NOT MOVE THE VALIDATED CAMERA CABLING WITHOUT REVALIDATION.
+#
+# UPDATE 2026-09-26: both cameras were physically unplugged and reconnected
+# for unrelated work on another project, which changed their USB bus paths
+# (usb-4.1.2.2/usb-4.2 no longer matched anything). Re-verified by capturing
+# a single still frame from each currently-connected camera and inspecting
+# it visually (not guessed): usb-4.1 shows the car's interior/dashboard
+# (CABIN), usb-4.2.2.2 shows the exterior/hood view (FRONT). Updated below
+# to match. Only these two cameras are physically connected right now — the
+# other two (full four-camera mode's LEFT/RIGHT) are disconnected for the
+# other project, so config/cameras.yaml's full four-camera mapping could not
+# be re-verified and was left untouched.
 
 front:
-  usb_path: "usb-4.1.2.2"
+  usb_path: "usb-4.2.2.2"
 cabin:
-  usb_path: "usb-4.2"
+  usb_path: "usb-4.1"

@@ -91,17 +91,20 @@ def test_two_camera_role_config_never_references_control_path():
         assert forbidden not in text, f"cameras_two_camera.yaml must not reference {forbidden!r}"
 
 
-def test_two_camera_role_config_maps_front_to_physically_verified_path():
-    """The core role correction: logical 'front' in this override file must
-    resolve to usb-4.1.2.2 (the physically-verified front camera, previously
-    labelled 'left' in the full four-camera config/cameras.yaml)."""
-    text = (REPO_ROOT / "config" / "cameras_two_camera.yaml").read_text()
-    assert "usb-4.1.2.2" in text
+def test_two_camera_role_config_maps_front_and_cabin_to_distinct_verified_paths():
+    """The core role correction: logical 'front' and 'cabin' in this override
+    file must resolve to two distinct USB paths (whatever they currently are
+    — re-verified 2026-09-26 after both cameras were unplugged/reconnected
+    for other work, which changed their bus paths from the original
+    2026-09-18 values). Parses the YAML rather than substring-matching, since
+    one path can be a substring of the other (e.g. "usb-4.2" vs
+    "usb-4.2.2.2") and a naive `in` check would pass for the wrong reason."""
+    from video.camera_resolver import load_camera_config
 
-
-def test_two_camera_role_config_keeps_cabin_unchanged():
-    text = (REPO_ROOT / "config" / "cameras_two_camera.yaml").read_text()
-    assert "usb-4.2" in text
+    roles = load_camera_config(REPO_ROOT / "config" / "cameras_two_camera.yaml")
+    assert set(roles) == {"front", "cabin"}
+    assert roles["front"] != roles["cabin"]
+    assert roles["front"] and roles["cabin"]
 
 
 def test_full_mode_cameras_config_untouched_by_role_correction():

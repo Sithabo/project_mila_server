@@ -425,6 +425,15 @@ cabin:
   usb_path: "usb-4.2"       # same physical cabin camera as every other mode
 ```
 
+**Update 2026-09-26:** both cameras were physically unplugged and reconnected
+for unrelated work, which changed their USB bus paths. Re-verified by
+capturing and visually inspecting a still frame from each currently-connected
+camera (not guessed) — see `config/cameras_two_camera.yaml`'s own header
+comment for the current values. Whenever a camera is unplugged/replugged,
+re-verify with the same still-frame method before trusting either config
+file's `usb_path` values; a changed physical port can silently point a role
+at the wrong camera otherwise.
+
 `CameraPublisher` gained a `camera_config_filename` constructor/CLI parameter
 (mirroring the existing `video_config_filename` minimal-mode parameter,
 defaulting to `cameras.yaml` for full backward compatibility) — the role
