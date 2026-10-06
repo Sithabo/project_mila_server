@@ -29,8 +29,21 @@
 # other two (full four-camera mode's LEFT/RIGHT) are disconnected for the
 # other project, so config/cameras.yaml's full four-camera mapping could not
 # be re-verified and was left untouched.
+#
+# UPDATE 2026-10-06: the camera rig was reconnected again and now has SIX
+# cameras, all behind one hub on USB port 4.4, so usb-4.2.2.2/usb-4.1 no
+# longer matched anything. Re-verified the same way: a still frame from each
+# camera, inspected visually, with every placement confirmed by the user:
+#   usb-4.4.2.2 FRONT (hood view)      usb-4.4.3.4 CABIN (interior)
+#   usb-4.4.2.1 top right              usb-4.4.3.2 top left
+#   usb-4.4.2.3 back right             usb-4.4.4.2 back left
+# Only FRONT and CABIN are used by this two-camera mode. Each value below
+# matches exactly one of the six bus paths (the resolver matches by suffix).
+# config/cameras.yaml (full four-camera mode) does not describe this
+# six-camera rig and was left untouched; it needs its own re-verification
+# before full mode is used again.
 
 front:
-  usb_path: "usb-4.2.2.2"
+  usb_path: "usb-4.4.2.2"
 cabin:
-  usb_path: "usb-4.1"
+  usb_path: "usb-4.4.3.4"
