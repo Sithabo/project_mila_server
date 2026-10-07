@@ -112,13 +112,16 @@ def test_two_camera_role_config_maps_front_and_cabin_to_distinct_verified_paths(
     assert roles["front"] and roles["cabin"]
 
 
-def test_full_mode_cameras_config_untouched_by_role_correction():
-    """The role correction must live only in the new override file — the
-    full four-camera config/cameras.yaml must still map 'left' to
-    usb-4.1.2.2 and 'front' to its original usb-2.4, unmodified."""
-    text = (REPO_ROOT / "config" / "cameras.yaml").read_text()
-    assert "usb-2.4" in text
-    assert "usb-4.1.2.2" in text
+def test_full_mode_cameras_config_maps_four_distinct_roles():
+    """Full mode keeps its own mapping file (the two-camera override stays
+    separate) and maps exactly the four roles to four distinct USB paths.
+    Remapped 2026-10-06 for the six-camera rig, where FRONT and CABIN are the
+    same physical cameras in both modes."""
+    from video.camera_resolver import load_camera_config
+
+    roles = load_camera_config(REPO_ROOT / "config" / "cameras.yaml")
+    assert set(roles) == {"front", "left", "right", "cabin"}
+    assert len(set(roles.values())) == 4
 
 
 def test_one_camera_minimal_mode_scripts_still_exist_unmodified_in_shape():

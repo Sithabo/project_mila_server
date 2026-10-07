@@ -7,11 +7,22 @@
 # DO NOT MOVE THE VALIDATED CAMERA CABLING WITHOUT REVALIDATION.
 # See docs/CAMERA_TOPOLOGY.md for the full topology rationale.
 
+#
+# UPDATE 2026-10-06: remapped for the six-camera rig (all cameras behind one
+# hub on USB port 4.4; the paths above in docs/CAMERA_TOPOLOGY.md are the old
+# rig). Each camera was identified from a still frame and its placement
+# confirmed by the user. Full mode uses four of the six; the user chose the
+# TOP pair as left/right (the back pair, usb-4.4.4.2 back-left and
+# usb-4.4.2.3 back-right, is unused here). FRONT and CABIN are the same
+# physical cameras as config/cameras_two_camera.yaml's, so no role
+# correction is needed on this rig. Each value matches exactly one bus path
+# under the resolver's suffix rule.
+
 front:
-  usb_path: "usb-2.4"
+  usb_path: "usb-4.4.2.2"
 left:
-  usb_path: "usb-4.1.2.2"
+  usb_path: "usb-4.4.3.2"
 right:
-  usb_path: "usb-2.3"
+  usb_path: "usb-4.4.2.1"
 cabin:
-  usb_path: "usb-4.2"
+  usb_path: "usb-4.4.3.4"

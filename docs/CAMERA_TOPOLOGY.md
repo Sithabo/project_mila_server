@@ -9,7 +9,36 @@
 > sharing between whichever cameras share a root controller/hub branch, and that
 > sharing pattern is exactly what was tuned to reach a working configuration.
 
-## Current validated mapping
+## Update 2026-10-06: six-camera rig (current)
+
+The rig was rebuilt with six "HD USB Camera" units, all behind one hub on USB
+port 4.4. The two-root-branch layout described below no longer exists; it is
+kept for history. Every camera was identified from a still frame and its
+placement confirmed by the user.
+
+| Camera        | USB bus path   | Full mode (`config/cameras.yaml`) | Two-camera mode |
+|---------------|----------------|-----------------------------------|-----------------|
+| Front (hood)  | `usb-4.4.2.2`  | FRONT                             | FRONT           |
+| Cabin         | `usb-4.4.3.4`  | CABIN                             | CABIN           |
+| Top left      | `usb-4.4.3.2`  | LEFT                              | —               |
+| Top right     | `usb-4.4.2.1`  | RIGHT                             | —               |
+| Back left     | `usb-4.4.4.2`  | —                                 | —               |
+| Back right    | `usb-4.4.2.3`  | —                                 | —               |
+
+These cameras offer MJPG 640x480 and 800x600 only at **30 fps** (15 fps only
+at 1280x960 and above), so both video configs now request 30 fps; 10 or 20 fps
+fails caps negotiation ("not-negotiated").
+
+**Simultaneous four-camera test (2026-10-06):** FRONT, LEFT, RIGHT and CABIN
+captured at the same time at 800x600 MJPG @ 30/1 (`gst-launch-1.0 … v4l2src …
+num-buffers=150 … ! fakesink`, cameras selected by `/dev/v4l/by-path`): all
+four streamed to completion, no `No space left on device`, no errors. Unlike
+the old rig's shared-hub failures, this single-hub layout reserves enough
+USB bandwidth for full mode. Caveat: indoors the cameras auto-exposed down to
+about 12 fps actual; repeat the test outdoors at a real 30 fps before relying
+on full mode in the field.
+
+## Previous validated mapping (old four-camera rig, superseded)
 
 | Role  | Device node   | USB bus path   |
 |-------|---------------|----------------|

@@ -150,7 +150,9 @@ def test_minimal_config_loads_from_repo_yaml():
 
 
 def test_full_mode_config_unchanged():
-    """Regression guard: full mode's locked config must not drift."""
+    """Regression guard: full mode's locked config must not drift. 30 fps
+    (with 30-frame keyframes, ~1 s) since the 2026-10-06 six-camera rig,
+    whose cameras offer 800x600 MJPG only at 30 fps."""
     from video.publisher import load_video_config
 
     config = load_video_config(
@@ -158,10 +160,10 @@ def test_full_mode_config_unchanged():
     )
     assert config.width == 800
     assert config.height == 600
-    assert config.framerate == 20
+    assert config.framerate == 30
     assert config.bitrate == 4000000
-    assert config.idr_interval_frames == 20
-    assert config.iframe_interval_frames == 20
+    assert config.idr_interval_frames == 30
+    assert config.iframe_interval_frames == 30
     assert config.poc_type == 2
 
 
