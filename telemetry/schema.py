@@ -19,9 +19,37 @@ HEADING_SOURCE_GNSS = "GNSS_COURSE"
 HEADING_SOURCE_IMU = "IMU"
 HEADING_SOURCE_UNAVAILABLE = "UNAVAILABLE"
 
+# Septentrio SBF "Do-Not-Use" values (SBF Reference Guide). Until it has a
+# solution, the receiver fills PVTGeodetic fields with these instead of
+# measurements, and the ROS driver passes them through unchanged. They must
+# become null, never a reading: e.g. NrSV 255 would show as "255 satellites",
+# HAccuracy 65535 as "±655.35 m", and a COG of -2e10 is finite, so it would
+# otherwise win heading selection as a valid GNSS course.
+SBF_DNU_U1 = 255  # u1 fields, e.g. NrSV
+SBF_DNU_U2 = 65535  # u2 fields, e.g. HAccuracy / VAccuracy (0.01 m units)
+SBF_DNU_FLOAT = -2e10  # f4/f8 fields, e.g. Vn, Ve, Vu, COG, Height
+# f4 can't hold -2e10 exactly (it arrives as about -19999999488), so treat
+# anything at or below this as the float Do-Not-Use value.
+_SBF_DNU_FLOAT_THRESHOLD = -1e10
+
 
 def is_finite(value) -> bool:
     return value is not None and isinstance(value, (int, float)) and math.isfinite(value)
+
+
+def measured_float(value):
+    """A float measurement, or None if it is missing, non-finite, or the SBF
+    float Do-Not-Use value."""
+    if not is_finite(value) or value <= _SBF_DNU_FLOAT_THRESHOLD:
+        return None
+    return value
+
+
+def satellite_count(nr_sv):
+    """NrSV, or None if missing or the SBF u1 Do-Not-Use value (255)."""
+    if nr_sv is None or nr_sv == SBF_DNU_U1:
+        return None
+    return nr_sv
 
 
 def compute_horizontal_speed_mps(vn, ve):
@@ -31,8 +59,9 @@ def compute_horizontal_speed_mps(vn, ve):
 
 
 def convert_accuracy_to_meters(raw_hundredths_of_a_meter):
-    """PVTGeodetic h_accuracy/v_accuracy are in units of 0.01 m."""
-    if not is_finite(raw_hundredths_of_a_meter):
+    """PVTGeodetic h_accuracy/v_accuracy are in units of 0.01 m. 65535 is the
+    SBF Do-Not-Use value, not 655.35 m."""
+    if not is_finite(raw_hundredths_of_a_meter) or raw_hundredths_of_a_meter == SBF_DNU_U2:
         return None
     return raw_hundredths_of_a_meter / 100.0
 
@@ -77,17 +106,17 @@ class GnssSample:
 
 
 def build_gnss_block(gnss: GnssSample, xsens_heading_deg: float | None) -> dict:
-    speed = compute_horizontal_speed_mps(gnss.vn_mps, gnss.ve_mps)
-    heading_deg, heading_source = select_heading(gnss.cog_deg, xsens_heading_deg)
+    speed = compute_horizontal_speed_mps(measured_float(gnss.vn_mps), measured_float(gnss.ve_mps))
+    heading_deg, heading_source = select_heading(measured_float(gnss.cog_deg), xsens_heading_deg)
     return {
         "timestamp_utc": gnss.timestamp_utc,
         "latitude_deg": gnss.latitude_deg,
         "longitude_deg": gnss.longitude_deg,
-        "altitude_m": gnss.altitude_m,
+        "altitude_m": measured_float(gnss.altitude_m),
         "horizontal_speed_mps": speed,
         "heading_deg": heading_deg,
         "heading_source": heading_source,
-        "satellite_count": gnss.nr_sv,
+        "satellite_count": satellite_count(gnss.nr_sv),
         "horizontal_accuracy_m": convert_accuracy_to_meters(gnss.h_accuracy_raw),
         "vertical_accuracy_m": convert_accuracy_to_meters(gnss.v_accuracy_raw),
         "fix_valid": gnss.fix_valid,

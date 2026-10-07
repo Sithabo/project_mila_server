@@ -14,10 +14,16 @@ from telemetry.schema import (  # noqa: E402
     MAX_MESSAGE_BYTES,
     MESSAGE_TYPE,
     SCHEMA_VERSION,
+    SBF_DNU_FLOAT,
+    SBF_DNU_U1,
+    SBF_DNU_U2,
+    build_gnss_block,
     build_telemetry_message,
     compute_horizontal_speed_mps,
     convert_accuracy_to_meters,
+    measured_float,
     sanitize,
+    satellite_count,
     select_heading,
     serialize,
 )
@@ -156,3 +162,78 @@ def test_serialize_valid_message_round_trips():
     payload = serialize(message)
     assert isinstance(payload, bytes)
     assert len(payload) <= MAX_MESSAGE_BYTES
+
+
+# --- Septentrio SBF Do-Not-Use values ----------------------------------------
+# A receiver without a solution sends these instead of measurements; they must
+# come out as null, never as readings.
+
+# What -2e10 becomes after passing through a 32-bit float (SBF f4 fields).
+DNU_AS_FLOAT32 = -19999999488.0
+
+
+def test_dnu_satellite_count_becomes_none():
+    assert satellite_count(SBF_DNU_U1) is None
+    assert satellite_count(None) is None
+    assert satellite_count(0) == 0
+    assert satellite_count(254) == 254
+
+
+def test_dnu_accuracy_becomes_none_not_655_m():
+    assert convert_accuracy_to_meters(SBF_DNU_U2) is None
+    assert convert_accuracy_to_meters(65534) == pytest.approx(655.34)
+
+
+@pytest.mark.parametrize("dnu", [SBF_DNU_FLOAT, DNU_AS_FLOAT32])
+def test_dnu_float_becomes_none(dnu):
+    assert measured_float(dnu) is None
+
+
+def test_measured_float_keeps_real_values():
+    assert measured_float(-12.5) == -12.5
+    assert measured_float(0.0) == 0.0
+    assert measured_float(359.9) == 359.9
+    assert measured_float(None) is None
+    assert measured_float(float("nan")) is None
+
+
+def test_no_solution_sample_has_no_fake_readings():
+    """The values a Septentrio receiver sends before its first fix."""
+    block = build_gnss_block(
+        make_gnss(
+            nr_sv=SBF_DNU_U1,
+            h_accuracy_raw=SBF_DNU_U2,
+            v_accuracy_raw=SBF_DNU_U2,
+            vn_mps=DNU_AS_FLOAT32,
+            ve_mps=DNU_AS_FLOAT32,
+            vu_mps=DNU_AS_FLOAT32,
+            cog_deg=DNU_AS_FLOAT32,
+            altitude_m=SBF_DNU_FLOAT,
+            fix_valid=False,
+        ),
+        xsens_heading_deg=None,
+    )
+    assert block["satellite_count"] is None
+    assert block["horizontal_accuracy_m"] is None
+    assert block["vertical_accuracy_m"] is None
+    assert block["horizontal_speed_mps"] is None
+    assert block["altitude_m"] is None
+    assert block["heading_deg"] is None
+    assert block["heading_source"] == HEADING_SOURCE_UNAVAILABLE
+    assert block["fix_valid"] is False
+
+
+def test_dnu_course_falls_back_to_imu_instead_of_winning_as_gnss():
+    block = build_gnss_block(make_gnss(cog_deg=DNU_AS_FLOAT32), xsens_heading_deg=123.0)
+    assert block["heading_deg"] == 123.0
+    assert block["heading_source"] == HEADING_SOURCE_IMU
+
+
+def test_real_values_pass_through_unchanged():
+    block = build_gnss_block(make_gnss(), xsens_heading_deg=None)
+    assert block["satellite_count"] == 10
+    assert block["horizontal_accuracy_m"] == pytest.approx(2.0)
+    assert block["horizontal_speed_mps"] == pytest.approx(2 ** 0.5)
+    assert block["heading_deg"] == 90.0
+    assert block["heading_source"] == HEADING_SOURCE_GNSS
+    assert block["altitude_m"] == 320.0
