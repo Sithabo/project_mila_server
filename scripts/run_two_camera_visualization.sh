@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Level 3C2-A: Two-camera low-bandwidth WAN visualization mode — logical
-# FRONT + CABIN video (640x480@10fps, 800kbps each) + GNSS-only telemetry
+# FRONT + CABIN video (640x480@30fps, 800kbps each) + GNSS-only telemetry
 # (~5Hz), for use over constrained uplinks (~5 Mbps or lower) where the full
 # four-camera mode is not reliable, but a single camera (existing one-camera
 # minimal mode) leaves too little situational awareness.
@@ -49,12 +49,12 @@ fi
 source .venv/bin/activate
 source /opt/ros/jazzy/setup.bash
 
-echo "[two-camera] starting logical FRONT video publisher (physical USB path per config/cameras_two_camera.yaml, 640x480@10fps, 800kbps)..."
+echo "[two-camera] starting logical FRONT video publisher (physical USB path per config/cameras_two_camera.yaml, 640x480@30fps, 800kbps)..."
 ./scripts/run_front_wan.sh --video-config video_minimal.yaml --camera-config cameras_two_camera.yaml &
 FRONT_PID=$!
 echo "[two-camera] FRONT publisher pid=$FRONT_PID"
 
-echo "[two-camera] starting CABIN video publisher (640x480@10fps, 800kbps)..."
+echo "[two-camera] starting CABIN video publisher (640x480@30fps, 800kbps)..."
 ./scripts/run_camera_wan.sh cabin --video-config video_minimal.yaml --camera-config cameras_two_camera.yaml &
 CABIN_PID=$!
 echo "[two-camera] CABIN publisher pid=$CABIN_PID"

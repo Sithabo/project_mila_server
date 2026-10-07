@@ -10,21 +10,26 @@
 # scaled down for robustness over a ~5 Mbps or lower uplink.
 
 capture:
-  # Confirmed via `v4l2-ctl --list-formats-ext` on the CABIN camera: 640x480
-  # MJPG @ 10.000 fps is a directly supported discrete mode — no rate-limiting
-  # GStreamer stage needed; this is the camera's native capture rate.
+  # The current "HD USB Camera" units (six-camera rig, 2026-10-06) offer
+  # 640x480 MJPG only at 30.000 fps (`v4l2-ctl --list-formats-ext`; 15 fps
+  # exists only at 1280x960 and above): a 10 or 15 fps request fails caps
+  # negotiation instantly (gst "not-negotiated"). The earlier cameras ran
+  # 640x480 MJPG @ 10 fps natively. 30 fps is this camera's own discrete
+  # mode, so still no rate-limiting GStreamer stage is needed.
   width: 640
   height: 480
-  framerate: 10
+  framerate: 30
 
 encoder:
   # Target ~800 kbps nominal per Level 3C1-A section 5 (robustness over
   # quality — do not raise this because the image looks soft).
   bitrate: 800000
-  # ~1 second IDR spacing at 10 FPS (NOT the full-mode value of 20, which
-  # was correct for 20 FPS but would give a 2-second GOP here).
-  idr_interval_frames: 10
-  iframe_interval_frames: 10
+  # ~1 second IDR spacing at 30 FPS, so a late reader still attaches within
+  # about a second (handoff doc §3). Keep these equal to the framerate.
+  # Bitrate is unchanged, so bandwidth per camera stays ~800 kbps (each frame
+  # gets fewer bits than at 10 fps: smoother but softer).
+  idr_interval_frames: 30
+  iframe_interval_frames: 30
   insert_sps_pps: true
   # Same Level 3B1-B3 fix as full mode — confirmed present on this installed
   # nvv4l2h264enc (range 0-2, default 0).

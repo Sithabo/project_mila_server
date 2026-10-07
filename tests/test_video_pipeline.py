@@ -116,10 +116,10 @@ def make_minimal_video_config(**overrides) -> VideoConfig:
     defaults = dict(
         width=640,
         height=480,
-        framerate=10,
+        framerate=30,
         bitrate=800000,
-        idr_interval_frames=10,
-        iframe_interval_frames=10,
+        idr_interval_frames=30,
+        iframe_interval_frames=30,
         insert_sps_pps=True,
         poc_type=2,
         h264parse_config_interval=-1,
@@ -142,10 +142,10 @@ def test_minimal_config_loads_from_repo_yaml():
     )
     assert config.width == 640
     assert config.height == 480
-    assert config.framerate == 10
+    assert config.framerate == 30
     assert config.bitrate == 800000
-    assert config.idr_interval_frames == 10
-    assert config.iframe_interval_frames == 10
+    assert config.idr_interval_frames == 30
+    assert config.iframe_interval_frames == 30
     assert config.poc_type == 2
 
 
@@ -165,9 +165,9 @@ def test_full_mode_config_unchanged():
     assert config.poc_type == 2
 
 
-def test_minimal_pipeline_targets_640x480_10fps():
+def test_minimal_pipeline_targets_640x480_30fps():
     argv = build_gst_launch_args("/dev/video4", make_minimal_video_config(), "srt://host/cabin")
-    assert "width=640,height=480,framerate=10/1" in " ".join(argv)
+    assert "width=640,height=480,framerate=30/1" in " ".join(argv)
 
 
 def test_minimal_pipeline_bitrate_800kbps():
@@ -175,12 +175,12 @@ def test_minimal_pipeline_bitrate_800kbps():
     assert "bitrate=800000" in argv
 
 
-def test_minimal_pipeline_one_second_keyframe_interval_at_10fps():
-    # 1 second at 10 FPS = 10 frames per IDR/I-frame, NOT the full-mode
-    # value of 20 (which was correct for 20 FPS but would be a 2s GOP here).
+def test_minimal_pipeline_one_second_keyframe_interval_at_30fps():
+    # 1 second at 30 FPS = 30 frames per IDR/I-frame, NOT the full-mode
+    # value of 20 (which was correct for 20 FPS but would be a 0.67s GOP here).
     argv = build_gst_launch_args("/dev/video4", make_minimal_video_config(), "srt://host/cabin")
-    assert "idrinterval=10" in argv
-    assert "iframeinterval=10" in argv
+    assert "idrinterval=30" in argv
+    assert "iframeinterval=30" in argv
     assert "idrinterval=20" not in argv
 
 

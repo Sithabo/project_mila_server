@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Level 3C1-A: Minimal robust WAN visualization mode — CABIN video only
-# (640x480@10fps, 800kbps) + GNSS-only telemetry (~5Hz), for use over
+# (640x480@30fps, 800kbps) + GNSS-only telemetry (~5Hz), for use over
 # constrained/unreliable mobile Internet (ATT/Starlink field testing showed
 # the full four-camera mode is not reliable enough on the available uplink).
 #
@@ -37,7 +37,7 @@ fi
 source .venv/bin/activate
 source /opt/ros/jazzy/setup.bash
 
-echo "[minimal] starting CABIN video publisher (640x480@10fps, 800kbps)..."
+echo "[minimal] starting CABIN video publisher (640x480@30fps, 800kbps)..."
 ./scripts/run_camera_wan.sh cabin --video-config video_minimal.yaml &
 CABIN_PID=$!
 echo "[minimal] CABIN publisher pid=$CABIN_PID"
