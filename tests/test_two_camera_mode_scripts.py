@@ -79,7 +79,12 @@ def test_stop_two_camera_only_targets_front_and_cabin_two_camera_variants():
 
 
 def test_two_camera_scripts_never_reference_control_path():
-    for script_name in ["run_two_camera_visualization.sh", "stop_two_camera_visualization.sh"]:
+    for script_name in [
+        "run_two_camera_visualization.sh",
+        "stop_two_camera_visualization.sh",
+        "start_two_camera_tmux.sh",
+        "stop_two_camera_tmux.sh",
+    ]:
         text = _read(script_name)
         for forbidden in FORBIDDEN_CONTROL_STRINGS:
             assert forbidden not in text, f"{script_name} must not reference {forbidden!r}"
@@ -133,3 +138,26 @@ def test_four_camera_full_mode_launchers_still_exist():
     assert "--role front" in front_text
     camera_wan_text = _read("run_camera_wan.sh")
     assert "left|right|cabin" in camera_wan_text
+
+
+def test_tmux_start_wraps_the_existing_two_camera_launcher_and_gnss_driver():
+    """The tmux wrapper must start the unchanged two-camera launcher (with its
+    own conflict checks) plus the GNSS driver, refuse a duplicate session,
+    and not start a GNSS driver when one is already running."""
+    text = _read("start_two_camera_tmux.sh")
+    assert "run_two_camera_visualization.sh" in text
+    assert "mila_septentrio_launch septentrio.launch.py" in text
+    assert "tmux has-session" in text
+    assert "septentrio_gnss_driver_node" in text
+    # Must not launch any publisher directly, bypassing the launcher's checks.
+    for launcher in ["run_camera_wan.sh", "run_front_wan.sh", "run_telemetry.sh"]:
+        assert launcher not in text
+
+
+def test_tmux_stop_reuses_the_graceful_two_camera_stop_script():
+    text = _read("stop_two_camera_tmux.sh")
+    assert "stop_two_camera_visualization.sh" in text
+    assert "kill-session" in text
+    # Only interrupts this session's own GNSS window, never a broad pkill.
+    assert "send-keys" in text
+    assert "pkill" not in text
